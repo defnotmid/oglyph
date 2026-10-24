@@ -1,0 +1,112 @@
+# oglyph
+
+Native Odin fonts and text shaping: `oglyph/font` reads TrueType and
+OpenType fonts, `oglyph/shape` shapes text with them the way HarfBuzz does,
+the reference it is tested against. Core only (no C library), every read of
+the font bounds-checked. MIT licensed ([LICENSE](LICENSE)).
+
+## Packages
+
+- **`font`**: a face's tables, the character to glyph map (cmap formats 0,
+  4, 6, 12 and 13, and variation sequences), metrics, kerning (the `kern`
+  table and GPOS pairs), glyph outlines (glyf with composites, CFF and CFF2
+  charstrings), names and glyph names, the characters a face maps, and
+  variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
+  gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
+  instance, and outlines, advances and shaping follow it.
+- **`shape`**: OpenType shaping: Unicode properties, script runs and
+  normalization from the Unicode 17.0.0 character database, HarfBuzz's
+  shapers (default, Arabic, Hebrew, Thai, Hangul, Indic, Khmer, Myanmar,
+  the Universal Shaping Engine) with its syllable machines, GSUB and GPOS
+  lookups, the legacy `kern` table, fallback mark positioning, feature
+  settings over all or part of the text, and variable fonts'
+  FeatureVariations and device deltas.
+
+## Use
+
+Clone oglyph next to your project and build with `-collection:deps=..`
+(the parent of both):
+
+```odin
+import ft "deps:oglyph/font"
+import sh "deps:oglyph/shape"
+
+face, err := ft.load(font_bytes)  // the bytes are borrowed
+layout: sh.Layout                 // the face's tables, prepared once
+sh.layout_init(&layout, &face)
+plan: sh.Plan                     // per script, direction, language, features
+sh.plan_init(&plan, &layout, &face, .Latin, .LTR)
+shaper: sh.Shaper                 // the glyph buffer, kept warm
+sh.shaper_init(&shaper)
+glyphs: [dynamic]sh.Glyph
+sh.shape(&shaper, &plan, &face, text_runes, nil, &glyphs)  // visual order
+```
+
+Three owners, three lifetimes: a `Layout` per face (read-only while
+shaping), a `Plan` per script, direction, language and set of features,
+and a `Shaper` per shaping call at a time (a warm shaper allocates
+nothing). `sh.script_runs` gives each character's script for splitting
+text into runs; bidi and line breaking are the caller's. A plan is for the
+face's instance as it is when made: after `ft.set_variations`, plan again.
+
+## How it shapes
+
+A face's `Layout` prepares its tables once: lookups and subtables, the
+coverages and class definitions read for every glyph unpacked into flat
+arrays (a bit or a class per glyph, at most as many bytes as the tables
+hold), and its cmap as a two-level table built from its spans. Each `Plan`
+holds, per table, which of its lookups can start at each glyph (a two-level
+table over all glyph ids, built from the coverages' spans: edges counted,
+sorted in two counting passes, blocks counted then filled). A shaping call
+turns that into a bitset of positions per lookup: a stage visits only the
+lookups some glyph can start at, a lookup only its positions; a
+substitution in place moves its position's bits, a pass that moves rows
+finds them again.
+
+## Checked against HarfBuzz
+
+`tools/shape_corpus` compares glyphs, clusters, advances and offsets with
+the system libharfbuzz (14.6, its OpenType shaper): 0 differences over its
+1,043 curated cases, 27,118 feature-set cases, 24,400 random strings and
+variable instances on the installed fonts it picks, and 49,200 random
+strings over 43 downloaded fonts. An independent run of 1.45 million random
+strings over 38 scripts (158 script / face pairs) agreed on every glyph and
+cluster. Outlines at variable instances agree with fontTools within 0.001
+units. Known differences: Arabic fonts without GSUB are not shaped from
+presentation forms (HarfBuzz's fallback), Mongolian variation selectors in
+text shaped as Arabic, and gvar advances within about 0.0001 of a half
+unit, summed exactly where HarfBuzz rounds in single precision.
+
+Time against HarfBuzz in the same process (Noto Sans, Noto Naskh Arabic,
+Noto Sans Devanagari): sentences 1.01-1.05x its time, words and random
+strings 0.70-0.89x (Devanagari words 1.06x).
+
+## Untrusted fonts
+
+Every read checks its bounds: a corrupt or truncated font gives wrong
+glyphs or a load error, never a read out of bounds. Work is bounded by the
+font's own data (a variation table over another number of axes than fvar's
+is ignored, as the spec requires; preparing a plan does work in proportion
+to its tables) and shaping by HarfBuzz's limits on buffer growth and lookup
+steps per character. The tests mutate the layout and variation tables of
+real fonts and shape and draw them with bounds checks on.
+
+## Test
+
+```sh
+odin test font -vet -strict-style
+odin test shape -vet -strict-style
+odin run tools/shape_corpus -o:speed -- -quiet       # against the system libharfbuzz
+odin run tools/shape_corpus -o:speed -- -random:200 -quiet
+perl tools/shape_unicode/gen.pl HARFBUZZ/src > shape/unicode_data.odin        # HarfBuzz 14.6.0's source
+perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odin
+```
+
+Some shape tests read installed fonts (Adwaita Sans for variable fonts) and
+skip without them. `assets/` holds the test fonts: Bitstream Vera Sans,
+JetBrains Mono and Noto Sans Arabic Bold.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Third-party notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
