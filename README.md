@@ -66,20 +66,27 @@ finds them again.
 ## Checked against HarfBuzz
 
 `tools/shape_corpus` compares glyphs, clusters, advances and offsets with
-the system libharfbuzz (14.6, its OpenType shaper): 0 differences over its
-1,043 curated cases, 27,118 feature-set cases, 24,400 random strings and
-variable instances on the installed fonts it picks, and 49,200 random
-strings over 43 downloaded fonts. An independent run of 1.45 million random
-strings over 38 scripts (158 script / face pairs) agreed on every glyph and
-cluster. Outlines at variable instances agree with fontTools within 0.001
-units. Known differences: Arabic fonts without GSUB are not shaped from
-presentation forms (HarfBuzz's fallback), Mongolian variation selectors in
-text shaped as Arabic, and gvar advances within about 0.0001 of a half
-unit, summed exactly where HarfBuzz rounds in single precision.
+the system libharfbuzz (14.6, its OpenType shaper). At v0.0.1: 0
+differences over its 1,043 curated cases, 27,118 feature-set cases, 24,400
+random strings and 384 variable-instance cases on the installed fonts it
+picks, and 51,600 random strings over 40 downloaded fonts (Google and SIL
+fonts for Arabic, Indic, Myanmar, Khmer, Korean and more). Before the
+fixes and speed work that went into v0.0.1, an independent verification
+run of 1.45 million random strings over 38 scripts (158 script / face
+pairs) agreed on every glyph and cluster (the differences it found in its
+edge-case jobs are fixed in v0.0.1), and outlines at variable instances
+agreed with an unrounded fontTools oracle within 0.001 units over 2.4
+million glyph instances. Known differences: Arabic fonts
+without GSUB are not shaped from presentation forms (HarfBuzz's fallback),
+Mongolian variation selectors in text shaped as Arabic, and gvar advances
+within about 0.0001 of a half unit, summed exactly where HarfBuzz rounds in
+single precision.
 
-Time against HarfBuzz in the same process (Noto Sans, Noto Naskh Arabic,
-Noto Sans Devanagari): sentences 1.01-1.05x its time, words and random
-strings 0.70-0.89x (Devanagari words 1.06x).
+Time against HarfBuzz, both in one process taking turns (Noto Sans, Noto
+Naskh Arabic, Noto Sans Devanagari; 12 sentences, their words and 200
+random strings each; `-o:speed`, one core of a Ryzen 9 9900X3D that was
+busy with other work, so within a few percent): sentences 1.01-1.05x its
+time, words and random strings 0.70-0.89x (Devanagari words 1.06x).
 
 ## Untrusted fonts
 
