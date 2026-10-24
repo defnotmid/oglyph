@@ -1,6 +1,54 @@
 package font
 
 import "base:runtime"
+import "core:strings"
+
+// A `name` table string, for a font picker: the family (name id 1, or 16
+// for the typographic one), subfamily (2, 17), full name (4), PostScript
+// name (6), and fvar's names (Axis.name_id, `instance`'s subfamily id:
+// "Weight", "Bold"). The Windows Unicode English record as UTF-8, else the
+// Macintosh record's bytes as they are; "" when the face has neither.
+name_string :: proc(f: ^Face, name_id: u16, allocator := context.allocator) -> string {
+	span := f.tables[.name]
+	if span.at == 0 {
+		return ""
+	}
+	d := f.data[span.at:][:span.size]
+	count := int(read_u16(d, 2))
+	strings_at := int(read_u16(d, 4))
+	mac := ""
+	for rec := 6; rec + 12 <= len(d) && count > 0; rec, count = rec + 12, count - 1 {
+		if read_u16(d, rec + 6) != name_id {
+			continue
+		}
+		platform, encoding, language := read_u16(d, rec), read_u16(d, rec + 2), read_u16(d, rec + 4)
+		length := int(read_u16(d, rec + 8))
+		at := strings_at + int(read_u16(d, rec + 10))
+		if at + length > len(d) {
+			continue
+		}
+		raw := d[at:][:length]
+		if platform == 3 && (encoding == 1 || encoding == 10) && (language == 0x409 || language & 0xff == 0x09) {
+			b := strings.builder_make(allocator)
+			for j := 0; j + 1 < len(raw); j += 2 {
+				r := rune(read_u16(raw, j))
+				// A surrogate pair is one code point.
+				if r >= 0xd800 && r < 0xdc00 {
+					if lo := rune(read_u16(raw, j + 2)); lo >= 0xdc00 && lo < 0xe000 {
+						r = 0x10000 + (r - 0xd800) << 10 + (lo - 0xdc00)
+						j += 2
+					}
+				}
+				strings.write_rune(&b, r)
+			}
+			return strings.to_string(b)
+		}
+		if platform == 1 && mac == "" {
+			mac = string(raw)
+		}
+	}
+	return strings.clone(mac, allocator) if mac != "" else ""
+}
 
 // Glyph names, for a glyph browser: post's (TrueType) or the CFF charset's.
 

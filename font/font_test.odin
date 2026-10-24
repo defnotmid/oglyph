@@ -1,6 +1,7 @@
 package font
 
 import "core:math/rand"
+import "core:os"
 import "core:testing"
 
 @(private = "file")
@@ -26,6 +27,7 @@ read_all :: proc(f: ^Face, o: ^Outline) {
 	names := make([]string, min(f.glyph_count, 4096))
 	defer delete(names)
 	glyph_names(f, names)
+	for id in ([?]u16{1, 2, 4, 6, 16, 17, 256}) do delete(name_string(f, id))
 }
 
 @(test)
@@ -51,6 +53,42 @@ test_vera :: proc(t: ^testing.T) {
 	for r, i in runes {
 		testing.expect(t, glyph_index(&f, r) != 0 && (i == 0 || r > runes[i - 1]))
 	}
+	// Its names are Macintosh records only (fontTools: the same strings).
+	for want, id in ([?]string{1 = "Bitstream Vera Sans", 2 = "Roman", 6 = "BitstreamVeraSans-Roman"}) {
+		if want == "" do continue
+		s := name_string(&f, u16(id))
+		testing.expect_value(t, s, want)
+		delete(s)
+	}
+	testing.expect_value(t, name_string(&f, 300), "")
+}
+
+// fvar's axis and named instance names, from Windows records (fontTools:
+// opsz "Optical size", wght "Weight", instance 6 "Bold" at wght 700).
+// Skips without Adwaita Sans installed.
+@(test)
+test_names_variable :: proc(t: ^testing.T) {
+	data, err := os.read_entire_file("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", context.allocator)
+	if err != nil do return
+	defer delete(data)
+	f, _ := load(data)
+	for want, i in ([?]string{"Optical size", "Weight"}) {
+		a, ok := axis(&f, i)
+		testing.expect(t, ok)
+		s := name_string(&f, a.name_id)
+		testing.expect_value(t, s, want)
+		delete(s)
+	}
+	values: [2]f32
+	id, ok := instance(&f, 6, values[:])
+	testing.expect(t, ok)
+	testing.expect_value(t, values[1], 700)
+	s := name_string(&f, id)
+	testing.expect_value(t, s, "Bold")
+	delete(s)
+	s = name_string(&f, 1)
+	testing.expect_value(t, s, "Adwaita Sans")
+	delete(s)
 }
 
 @(test)
