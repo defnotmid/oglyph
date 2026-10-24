@@ -58,4 +58,3 @@ jobs:
           # The HarfBuzz comparison needs libharfbuzz to run; it is
           # type-checked here.
           odin check tools/shape_corpus -vet -strict-style
-          odin check tools/mascot -vet -strict-style
