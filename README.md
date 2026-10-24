@@ -1,5 +1,7 @@
 # oglyph
 
+<img src="assets/logo.png" width="96" alt="oglyph's mascot: a pixel-art octopus waving, a quill in one arm">
+
 Native Odin fonts and text shaping: `oglyph/font` reads TrueType and
 OpenType fonts, `oglyph/shape` shapes text with them the way HarfBuzz does,
 the reference it is tested against. Core only (no C library), every read of
@@ -10,7 +12,8 @@ the font bounds-checked. MIT licensed ([LICENSE](LICENSE)).
 - **`font`**: a face's tables, the character to glyph map (cmap formats 0,
   4, 6, 12 and 13, and variation sequences), metrics, kerning (the `kern`
   table and GPOS pairs), glyph outlines (glyf with composites, CFF and CFF2
-  charstrings), names and glyph names, the characters a face maps, and
+  charstrings), names (`name_string`: family, subfamily, and fvar's axis
+  and instance names) and glyph names, the characters a face maps, and
   variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
   gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
   instance, and outlines, advances and shaping follow it.
@@ -112,6 +115,13 @@ perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odi
 Some shape tests read installed fonts (Adwaita Sans for variable fonts) and
 skip without them. `assets/` holds the test fonts: Bitstream Vera Sans,
 JetBrains Mono and Noto Sans Arabic Bold.
+
+The mascot, an octopus with a quill (ink, and arms that curl like a
+script's strokes), is drawn by `tools/mascot` (`odin run tools/mascot --
+assets`): `assets/logo.svg` keeps its eyes, mouths and a drop of ink at the
+nib (forming, falling, splashed) as layers a script can switch by id, each
+colour one traced path, plus a hidden `silhouette` (the whole octopus as
+one outline).
 
 ## License
 
