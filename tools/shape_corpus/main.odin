@@ -504,7 +504,9 @@ compare :: proc(a, b: []sh.Glyph, counts: ^Counts) -> bool {
 	counts.offset_cases += int(offset > 0)
 	counts.position_cases += int(position > 0)
 	// Raw advances and offsets may differ where pen positions agree (the
-	// kern table: HarfBuzz splits each pair's value over both glyphs).
+	// kern table: oglyph puts a pair's value on the left glyph's advance,
+	// HarfBuzz splits it over both glyphs, the right one's half also an
+	// offset).
 	return glyph + cluster + position > 0
 }
 

@@ -85,6 +85,16 @@ Mongolian variation selectors in text shaped as Arabic, and gvar advances
 within about 0.0001 of a half unit, summed exactly where HarfBuzz rounds in
 single precision.
 
+Where HarfBuzz's own choice is worse for whoever reads the output, oglyph
+departs from it on purpose, and the corpus compares what those choices
+leave the same. A pair in the legacy `kern` table adds its whole value to
+the left glyph's advance, as a GPOS pair adjustment does (HarfBuzz gives
+the left glyph half, and the right one the other half as both advance
+and offset), so a glyph is drawn at its pen and summing advances gives
+pens for carets and truncation. Glyphs land at the same positions
+(the corpus's pen positions: 0 differences); the raw advances and
+offsets differ in 13 of the curated cases and 49 of the random ones.
+
 Time against HarfBuzz, both in one process taking turns (Noto Sans, Noto
 Naskh Arabic, Noto Sans Devanagari; 12 sentences, their words and 200
 random strings each; `-o:speed`, one core of a Ryzen 9 9900X3D that was

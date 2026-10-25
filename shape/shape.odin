@@ -551,13 +551,9 @@ kern_table :: proc(c: ^Apply_Context) {
 				} else if v > key {
 					hi = mid
 				} else {
-					// Split as HarfBuzz does: half on the left glyph's advance,
-					// the rest on the right one's advance and offset.
-					kern := i32(ft.read_i16(d, r + 4))
-					left := kern >> 1
-					s.pos[i].x_advance += left
-					s.pos[it.idx].x_advance += kern - left
-					s.pos[it.idx].x_offset += kern - left
+					// The pair's distance: the left glyph's advance, as a GPOS
+					// pair adjustment would.
+					s.pos[i].x_advance += i32(ft.read_i16(d, r + 4))
 					break
 				}
 			}

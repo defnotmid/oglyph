@@ -70,9 +70,9 @@ test_vera_kern :: proc(t: ^testing.T) {
 		f, _ := ft.load(vera)
 		a, v := ft.glyph_index(&f, 'A'), ft.glyph_index(&f, 'V')
 		adv, _ := ft.h_metrics(&f, a)
-		// V's ink starts the kerning after A's advance (split between the
-		// two glyphs as HarfBuzz does).
-		testing.expect_value(t, int(out[0].advance + out[1].offset[0]), adv + ft.kern(&f, a, v))
+		// A's advance takes the kerning; V isn't moved off its pen.
+		testing.expect_value(t, int(out[0].advance), adv + ft.kern(&f, a, v))
+		testing.expect_value(t, out[1].offset[0], 0)
 	}
 }
 
