@@ -68,10 +68,10 @@ test_vera_kern :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(out), 2)
 	if len(out) == 2 {
 		f, _ := ft.load(vera)
-		a, v := ft.glyph_index(&f, 'A'), ft.glyph_index(&f, 'V')
-		adv, _ := ft.h_metrics(&f, a)
-		// A's advance takes the kerning; V isn't moved off its pen.
-		testing.expect_value(t, int(out[0].advance), adv + ft.kern(&f, a, v))
+		adv, _ := ft.h_metrics(&f, ft.glyph_index(&f, 'A'))
+		// A's advance takes the kerning (Vera's kern table: A V -131, as
+		// fontTools reads it); V isn't moved off its pen.
+		testing.expect_value(t, int(out[0].advance), adv - 131)
 		testing.expect_value(t, out[1].offset[0], 0)
 	}
 }

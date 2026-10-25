@@ -386,7 +386,7 @@ interpolate_untouched :: proc(o: ^Outline, n: int, dx, dy: []f32, touched: []boo
 }
 
 // The delta of a point at `v` between touched points at `prev` and
-// `next` (HarfBuzz's arithmetic, for the same rounding).
+// `next` (HarfBuzz's arithmetic, for the same rounding; to review).
 @(private)
 iup :: #force_inline proc(v, prev, next, d_prev, d_next: f32) -> f32 {
 	if prev == next {

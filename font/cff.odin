@@ -340,7 +340,7 @@ subr :: proc(index: []u8, n: int, wide := false) -> []u8 {
 
 // A charstring's pen: the points go to `out` (when not nil) and grow `box`.
 // Positions add up relative moves, in f64 so a contour's blended moves
-// come back exactly to its start (as HarfBuzz's doubles do).
+// come back exactly to its start (as HarfBuzz's doubles do; to review).
 @(private)
 Pen :: struct {
 	out:      ^Outline,

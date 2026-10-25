@@ -783,7 +783,7 @@ compile :: proc(p: ^Planner, f: ^ft.Face, language: Tag) {
 	// Bits 1 ..< 4 are left free and 31 is the last: features get as many
 	// bits as HarfBuzz gives them (it keeps the low bits for glyph flags and
 	// the top one for the global bit), so the same ones are dropped when
-	// they don't fit.
+	// they don't fit (HarfBuzz's choice, to review).
 	plan.global_mask = GLOBAL_MASK
 	next_bit: u32 = 4
 	required_stage: [Table_Kind]int

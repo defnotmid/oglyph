@@ -227,7 +227,8 @@ layout_table_init :: proc(l: ^Layout, kind: Table_Kind, at, size: int) {
 		count := int(ft.read_u16(d, lookup + 4))
 		lk.props = u32(flags)
 		if flags & LOOKUP_USE_MARK_FILTERING_SET != 0 {
-			// A set GDEF lacks: the flag is dropped (HarfBuzz's choice).
+			// A set GDEF lacks: the flag is dropped (HarfBuzz's choice, to
+			// review).
 			set := ft.read_u16(d, lookup + 6 + 2 * count)
 			if l.mark_sets != 0 && ft.read_u16(d, l.mark_sets) == 1 && set < ft.read_u16(d, l.mark_sets + 2) {
 				lk.props |= u32(set) << 16

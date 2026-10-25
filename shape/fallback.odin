@@ -123,7 +123,8 @@ recategorize_class :: proc(r: rune, class: u8) -> u8 {
 
 // Places each base's marks. Clusters start at glyphs that are neither
 // marks nor default ignorables (an invisible SHY or ZWSP between a letter
-// and its marks doesn't take them, as in HarfBuzz); a cluster's base is
+// and its marks doesn't take them, as in HarfBuzz: to review); a
+// cluster's base is
 // its first glyph that isn't a mark.
 @(private)
 position_marks_fallback :: proc(s: ^Shaper, plan: ^Plan, f: ^ft.Face, adjust: bool) {

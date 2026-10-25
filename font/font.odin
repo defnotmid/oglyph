@@ -1,6 +1,6 @@
 // Reads TrueType and OpenType fonts: a face's tables, the character to
-// glyph map, metrics, kerning, glyph outlines and variable fonts'
-// instances. Core only: anything that draws glyphs can use it (ovg's text
+// glyph map, metrics, glyph outlines and variable fonts' instances
+// (kerning is oglyph/shape's: GPOS and the kern table). Core only: anything that draws glyphs can use it (ovg's text
 // does), and oglyph/shape shapes with it.
 //
 // `load` reads a face once: where each table it uses lies and the header
@@ -42,7 +42,6 @@ Table :: enum u8 {
 	loca,
 	glyf,
 	CFF,
-	kern,
 	GPOS,
 	GSUB,
 	COLR,
@@ -69,7 +68,6 @@ TAGS := [Table]string {
 	.loca = "loca",
 	.glyf = "glyf",
 	.CFF  = "CFF ",
-	.kern = "kern",
 	.GPOS = "GPOS",
 	.GSUB = "GSUB",
 	.COLR = "COLR",
@@ -167,27 +165,6 @@ Long_Metric :: struct #packed {
 
 Group :: struct #packed {
 	first, last, glyph: u32be,
-}
-
-// A coverage range (first, last, the first's coverage index) or a class
-// range (first, last, class).
-@(private)
-Range :: struct #packed {
-	first, last, value: u16be,
-}
-
-// A pair set's record when the values are an x advance on the first glyph.
-@(private)
-Pair :: struct #packed {
-	second:    u16be,
-	x_advance: i16be,
-}
-
-// A legacy kern pair: the glyphs (left << 16 | right) and the value.
-@(private)
-Kern_Pair :: struct #packed {
-	pair:  u32be,
-	value: i16be,
 }
 
 // ---- reading ----------------------------------------------------------------------
@@ -439,137 +416,3 @@ scale_for_em :: proc(f: ^Face, size: f32) -> f32 {
 	return size / f32(f.units_per_em)
 }
 
-// ---- kerning ----------------------------------------------------------------------
-
-// The advance adjustment between `a` and `b` (font units): GPOS pair
-// adjustments of the x advance when the face has GPOS, else the first
-// subtable of the legacy kern table.
-kern :: proc(f: ^Face, a, b: Glyph) -> int {
-	if f.tables[.GPOS].at != 0 {
-		return gpos_kern(f, a, b)
-	}
-	if f.tables[.kern].at != 0 {
-		return kern_table(f, a, b)
-	}
-	return 0
-}
-
-@(private)
-kern_table :: proc(f: ^Face, a, b: Glyph) -> int {
-	d, k := f.data, f.tables[.kern].at
-	// One table at least, and the first horizontal format 0.
-	if read_u16(d, k + 2) < 1 || read_u16(d, k + 8) != 1 {
-		return 0
-	}
-	pairs := records(d, k + 18, int(read_u16(d, k + 10)), Kern_Pair)
-	i, found := slice.binary_search_by(pairs, u32(a) << 16 | u32(b), proc(p: Kern_Pair, key: u32) -> slice.Ordering {
-		return slice.cmp(u32(p.pair), key)
-	})
-	return int(pairs[i].value) if found else 0
-}
-
-// Pair adjustment lookups (type 2) whose values are an x advance on the
-// first glyph only (value formats 4 and 0); the first subtable covering `a`
-// decides.
-@(private)
-gpos_kern :: proc(f: ^Face, a, b: Glyph) -> int {
-	d, gpos := f.data, f.tables[.GPOS].at
-	if read_u16(d, gpos) != 1 || read_u16(d, gpos + 2) != 0 {
-		return 0
-	}
-	list := gpos + int(read_u16(d, gpos + 8))
-	for at in records(d, list + 2, int(read_u16(d, list)), U16) {
-		// A lookup: its type, flags, then its subtables' offsets.
-		lookup := list + int(at.v)
-		head := records(d, lookup, 3, U16)
-		if head == nil || head[0].v != 2 {
-			continue
-		}
-		for sub in records(d, lookup + 6, int(head[2].v), U16) {
-			t := lookup + int(sub.v)
-			covered := coverage_index(d, t + int(read_u16(d, t + 2)), a)
-			if covered < 0 {
-				continue
-			}
-			if read_u16(d, t + 4) != 4 || read_u16(d, t + 6) != 0 {
-				return 0
-			}
-			switch read_u16(d, t) {
-			case 1:
-				if covered >= int(read_u16(d, t + 8)) {
-					return 0
-				}
-				// The pair set: second glyphs and their x advances.
-				set := t + int(read_u16(d, t + 10 + 2 * covered))
-				pairs := records(d, set + 2, int(read_u16(d, set)), Pair)
-				k, found := slice.binary_search_by(pairs, b, proc(p: Pair, b: Glyph) -> slice.Ordering {
-					return slice.cmp(u16(p.second), b)
-				})
-				if found {
-					return int(pairs[k].x_advance)
-				}
-			case 2:
-				c1 := class_of(d, t + int(read_u16(d, t + 8)), a)
-				c2 := class_of(d, t + int(read_u16(d, t + 10)), b)
-				n1, n2 := int(read_u16(d, t + 12)), int(read_u16(d, t + 14))
-				if c1 < 0 || c1 >= n1 || c2 < 0 || c2 >= n2 {
-					return 0
-				}
-				return int(read_i16(d, t + 16 + 2 * (c1 * n2 + c2)))
-			case:
-				return 0
-			}
-		}
-	}
-	return 0
-}
-
-// The glyph's index in an OpenType coverage table; -1 when not covered.
-@(private)
-coverage_index :: proc(d: []u8, t: int, g: Glyph) -> int {
-	count := int(read_u16(d, t + 2))
-	switch read_u16(d, t) {
-	case 1:
-		glyphs := records(d, t + 4, count, U16)
-		i, found := slice.binary_search_by(glyphs, g, proc(id: U16, g: Glyph) -> slice.Ordering {
-			return slice.cmp(u16(id.v), g)
-		})
-		if found {
-			return i
-		}
-	case 2:
-		ranges := records(d, t + 4, count, Range)
-		if i, found := slice.binary_search_by(ranges, g, in_range); found {
-			return int(ranges[i].value) + int(g) - int(ranges[i].first)
-		}
-	}
-	return -1
-}
-
-// The glyph's class in an OpenType class definition table: 0 when listed
-// nowhere, -1 for an unknown format.
-@(private)
-class_of :: proc(d: []u8, t: int, g: Glyph) -> int {
-	switch read_u16(d, t) {
-	case 1:
-		first := read_u16(d, t + 2)
-		classes := records(d, t + 6, int(read_u16(d, t + 4)), U16)
-		if g >= first && int(g - first) < len(classes) {
-			return int(classes[g - first].v)
-		}
-	case 2:
-		ranges := records(d, t + 4, int(read_u16(d, t + 2)), Range)
-		if i, found := slice.binary_search_by(ranges, g, in_range); found {
-			return int(ranges[i].value)
-		}
-	case:
-		return -1
-	}
-	return 0
-}
-
-// Orders a range against a glyph: Equal when it holds the glyph.
-@(private)
-in_range :: proc(r: Range, g: Glyph) -> slice.Ordering {
-	return .Less if u16(r.last) < g else (.Greater if u16(r.first) > g else .Equal)
-}

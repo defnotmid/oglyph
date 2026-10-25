@@ -76,8 +76,8 @@ instance :: proc(f: ^Face, i: int, values: []f32) -> (subfamily_name_id: u16, ok
 
 // Chooses the instance by user values per axis tag; axes not named take
 // their default. Normalizing and avar's remapping work in 16.16 fixed
-// point, rounded to 2.14 at the end (HarfBuzz's precision: 2.14 between
-// the steps loses a unit at some values).
+// point, rounded to 2.14 at the end (HarfBuzz's precision, to review: 2.14
+// between the steps loses a unit at some values).
 set_variations :: proc(f: ^Face, settings: []Variation) {
 	n: [MAX_AXES]f32
 	for i in 0 ..< f.axis_count {
@@ -104,8 +104,8 @@ set_coords :: proc(f: ^Face, coords: []i16) {
 
 // A user value's normalized coordinate: -1 at the minimum, 0 at the
 // default, 1 at the maximum (to 16.16). In single precision, rounded half
-// away from zero, as HarfBuzz does, so instances near a rounding boundary
-// pick the same coordinate.
+// away from zero, as HarfBuzz does (to review), so instances near a
+// rounding boundary pick the same coordinate.
 @(private)
 normalize_axis_value :: proc(a: Axis, v: f32) -> f32 {
 	lo, hi := min(a.default, a.min), max(a.default, a.max)

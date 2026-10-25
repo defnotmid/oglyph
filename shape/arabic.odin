@@ -35,7 +35,7 @@ ARABIC_NONE :: 7
 ARABIC_STCH_FIXED :: 8
 @(private)
 ARABIC_STCH_REPEATING :: 9
-// A stretch makes at most this many glyphs (HarfBuzz's limit).
+// A stretch makes at most this many glyphs (HarfBuzz's limit, to review).
 @(private)
 ARABIC_STCH_MAX_GLYPHS :: 256
 

@@ -10,9 +10,8 @@ the font bounds-checked. MIT licensed ([LICENSE](LICENSE)).
 ## Packages
 
 - **`font`**: a face's tables, the character to glyph map (cmap formats 0,
-  4, 6, 12 and 13, and variation sequences), metrics, kerning (the `kern`
-  table and GPOS pairs), glyph outlines (glyf with composites, CFF and CFF2
-  charstrings), names (`name_string`: family, subfamily, and fvar's axis
+  4, 6, 12 and 13, and variation sequences), metrics, glyph outlines
+  (glyf with composites, CFF and CFF2 charstrings), names (`name_string`: family, subfamily, and fvar's axis
   and instance names) and glyph names, the characters a face maps, and
   variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
   gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
@@ -94,6 +93,32 @@ and offset), so a glyph is drawn at its pen and summing advances gives
 pens for carets and truncation. Glyphs land at the same positions
 (the corpus's pen positions: 0 differences); the raw advances and
 offsets differ in 13 of the curated cases and 49 of the random ones.
+
+### Following HarfBuzz, to review
+
+What oglyph takes from HarfBuzz's choices rather than from a spec, each a
+candidate for a departure like the one above; the code marks them "to
+review" where they are.
+
+- Behaviour: a narrow space the font lacks takes half a space, where
+  Unicode suggests about a fifth of an em (`adjust_spaces`, shape.odin);
+  a default ignorable loses its advance and x offset but keeps its y
+  offset and attachment (`position`); a kern table with a state machine
+  subtable keeps marks' advances (`kern_has_state_machine`); a lookup
+  naming a mark filtering set GDEF lacks loses the flag (layout.odin);
+  features get HarfBuzz's mask bits and are dropped where it drops them
+  (plan.odin); an Arabic stretch makes at most 256 glyphs (arabic.odin);
+  a run whose script goes the other way is shaped in the script's
+  direction (`native_direction`); an invisible SHY or ZWSP doesn't take a
+  letter's marks for fallback positioning (fallback.odin).
+- Arithmetic, for the same rounding: variation coordinates in 16.16 and
+  2.14, rounded half away from zero (var.odin), gvar's interpolation of
+  untouched points (gvar.odin), CFF positions in f64 (cff.odin).
+- Designs fonts are made against, to change only with fonts' evidence:
+  how lookups apply and track ligatures' marks (apply.odin),
+  normalization (normalize.odin), fallback mark positioning
+  (fallback.odin), Indic shaping's Uniscribe compatibility (indic.odin),
+  the reordered combining classes (unicode.odin).
 
 Time against HarfBuzz, both in one process taking turns (Noto Sans, Noto
 Naskh Arabic, Noto Sans Devanagari; 12 sentences, their words and 200

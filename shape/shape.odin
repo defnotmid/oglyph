@@ -294,7 +294,8 @@ form_clusters :: proc(s: ^Shaper) {
 
 // Text whose script runs the other way than asked is shaped in the
 // script's direction, graphemes kept in order (HarfBuzz's native
-// direction): digits alone in a right-to-left script stay left to right.
+// direction, to review): digits alone in a right-to-left script stay left
+// to right.
 @(private)
 native_direction :: proc(s: ^Shaper, plan: ^Plan) {
 	#partial switch plan.script {
@@ -434,7 +435,7 @@ position :: proc(c: ^Apply_Context, f: ^ft.Face) {
 		for i in 0 ..< s.len {
 			if is_ignorable(s.info[i]) {
 				// Only across the line: its vertical offset and what it
-				// attaches to still move it (HarfBuzz's choice).
+				// attaches to still move it (HarfBuzz's choice, to review).
 				s.pos[i].x_advance, s.pos[i].x_offset = 0, 0
 			}
 		}
@@ -490,8 +491,8 @@ adjust_spaces :: proc(s: ^Shaper, f: ^ft.Face) {
 				}
 			}
 		case .Narrow:
-			// Half a space (HarfBuzz's choice; Unicode says about a fifth
-			// of an em, which is many fonts' space).
+			// Half a space (HarfBuzz's choice, to review; Unicode says
+			// about a fifth of an em, which is many fonts' space).
 			p.x_advance /= 2
 		}
 	}
@@ -562,7 +563,8 @@ kern_table :: proc(c: ^Apply_Context) {
 }
 
 // Whether the legacy kern table has a state machine subtable (format 1,
-// which isn't applied; with it HarfBuzz doesn't zero marks).
+// which isn't applied; with it HarfBuzz doesn't zero marks: HarfBuzz's
+// choice, to review).
 @(private)
 kern_has_state_machine :: proc(l: ^Layout) -> bool {
 	d, k := l.data, l.kern
