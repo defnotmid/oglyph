@@ -88,8 +88,9 @@ single precision.
 Time against HarfBuzz, both in one process taking turns (Noto Sans, Noto
 Naskh Arabic, Noto Sans Devanagari; 12 sentences, their words and 200
 random strings each; `-o:speed`, one core of a Ryzen 9 9900X3D that was
-busy with other work, so within a few percent): sentences 1.01-1.05x its
-time, words and random strings 0.70-0.89x (Devanagari words 1.06x).
+busy with other work, so within a few percent): sentences 0.99-1.10x its
+time (Latin 1.00x, Arabic 1.06-1.10x, Devanagari 0.99-1.04x), words and
+random strings 0.66-0.90x (Devanagari words 1.02-1.03x).
 
 ## Untrusted fonts
 

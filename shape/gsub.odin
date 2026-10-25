@@ -224,6 +224,7 @@ gsub_apply :: proc(c: ^Apply_Context, type: u8, sub: ^Subtable, covered: int) ->
 		}
 		set := offset16(d, at, at + 6 + 2 * covered)
 		count := int(ft.read_u16(d, set))
+		next := next_component(c)
 		for i in 0 ..< count {
 			lig := offset16(d, set, set + 2 + 2 * i)
 			if lig == 0 {
@@ -238,6 +239,9 @@ gsub_apply :: proc(c: ^Apply_Context, type: u8, sub: ^Subtable, covered: int) ->
 				// One component: in place, not a ligature.
 				subst_replace(c, lig_glyph)
 				return true
+			}
+			if next != NEXT_EITHER && int(ft.read_u16(d, lig + 4)) != next {
+				continue
 			}
 			// Every field read is written by match_input.
 			m: Matched = ---
@@ -278,6 +282,36 @@ gsub_apply :: proc(c: ^Apply_Context, type: u8, sub: ^Subtable, covered: int) ->
 	}
 	return false
 }
+
+// The glyph a ligature's second component is compared with, found once
+// for its set (match_input's first step, the same for every ligature): -1
+// when none can match (none follows, or the next is outside the lookup's
+// mask or syllable), NEXT_EITHER for a default ignorable, which a
+// component may match or skip past.
+@(private)
+next_component :: proc(c: ^Apply_Context) -> int {
+	s := c.s
+	it := skippy_init(c, s.idx, false)
+	for it.idx < it.end - 1 {
+		it.idx += 1
+		info := s.info[it.idx]
+		switch may_skip(&it, info) {
+		case .Yes:
+			continue
+		case .Maybe:
+			return NEXT_EITHER
+		case .No:
+			if info.mask & it.mask == 0 || (it.syllable != 0 && it.syllable != info.syllable) {
+				return -1
+			}
+			return int(info.glyph)
+		}
+	}
+	return -1
+}
+
+@(private)
+NEXT_EITHER :: -2
 
 // Replaces matched glyphs with a ligature, keeping track of which of its
 // components the marks among and after them belong to (for GPOS mark to
