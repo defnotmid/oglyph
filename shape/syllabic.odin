@@ -4,10 +4,10 @@ import ft "../font"
 
 // What the syllable-based shapers (Indic, Khmer, Myanmar, USE) share: a
 // state machine splits the text into syllables by the characters'
-// categories (HarfBuzz's ragel machines, as tables in syllable_data.odin),
-// broken syllables get a dotted circle to hang on, features apply within
-// a syllable, and reordering asks whether a feature would substitute a
-// sequence.
+// categories (HarfBuzz's ragel machines, as dense tables in
+// syllable_data.odin), broken syllables get a dotted circle to hang on,
+// features apply within a syllable, and reordering asks whether a feature
+// would substitute a sequence.
 
 Machine_Op :: enum u8 {
 	None,
@@ -28,26 +28,36 @@ Machine_Action :: struct {
 	arg: u8,
 }
 
-// A ragel scanner's tables: per state its key range and transitions, the
-// actions on each transition, and those taken entering and leaving states.
+// A ragel scanner as one transition per state and category, unpacked from
+// ragel's flat tables: the actions on each transition, and those taken
+// entering and leaving states.
 Machine :: struct {
-	trans_keys:         []i16,
-	key_spans:          []i16,
-	index_offsets:      []i16,
-	indicies:           []i16,
-	trans_targs:        []i16,
-	trans_actions:      []i16,
-	to_state_actions:   []i16,
-	from_state_actions: []i16,
-	eof_trans:          []i16,
-	actions:            []Machine_Action,
-	act_types:          []i8,
-	start:              int,
-	// The state action values that set ts to p, and clear it.
-	from_ts, to_ts:     int,
+	// Row per state, column per category (the last one for categories
+	// past the others): the next state in the low byte, the action (an
+	// index into `actions`, 0 for none) in the high.
+	table:       []u16,
+	columns:     int,
+	// Per state: its end-of-input transition, as in `table`, or NO_EOF.
+	eof:         []u16,
+	state_flags: []Machine_State_Flags,
+	actions:     []Machine_Action,
+	act_types:   []i8,
+	start:       int,
 	// The broken cluster's syllable type.
-	broken:             int,
+	broken:      int,
 }
+
+Machine_State_Flag :: enum u8 {
+	// Reading on from the state, a syllable may start here (ts = p).
+	Start,
+	// Arriving in the state, no syllable is open (ts = 0).
+	End,
+}
+
+Machine_State_Flags :: bit_set[Machine_State_Flag;u8]
+
+// A state with no end-of-input transition (Machine.eof).
+NO_EOF :: 0xffff
 
 Vowel_Constraint :: struct {
 	script: Script,
@@ -75,27 +85,23 @@ run_machine :: proc(m: ^Machine, cats: []u8, out: []u8) -> (broken: bool) {
 			broken^ = true
 		}
 	}
+	last := m.columns - 1
 	for p <= pe {
-		trans: int
+		e: u16
 		if p < pe {
-			if int(m.from_state_actions[cs]) == m.from_ts {
+			if .Start in m.state_flags[cs] {
 				ts = p
 			}
-			keys := cs << 1
-			span := int(m.key_spans[cs])
-			c := int(cats[p])
-			lo, hi := int(m.trans_keys[keys]), int(m.trans_keys[keys + 1])
-			k := c - lo if span > 0 && lo <= c && c <= hi else span
-			trans = int(m.indicies[int(m.index_offsets[cs]) + k])
+			e = m.table[cs * m.columns + min(int(cats[p]), last)]
 		} else {
 			// At the end: the state's end-of-input transition, if any.
-			if m.eof_trans[cs] <= 0 {
+			e = m.eof[cs]
+			if e == NO_EOF {
 				break
 			}
-			trans = int(m.eof_trans[cs]) - 1
 		}
-		cs = int(m.trans_targs[trans])
-		if a := int(m.trans_actions[trans]); a != 0 && a < len(m.actions) {
+		cs = int(e & 0xff)
+		if a := int(e >> 8); a != 0 && a < len(m.actions) {
 			action := m.actions[a]
 			switch action.op {
 			case .None:
@@ -121,7 +127,7 @@ run_machine :: proc(m: ^Machine, cats: []u8, out: []u8) -> (broken: bool) {
 				}
 			}
 		}
-		if int(m.to_state_actions[cs]) == m.to_ts {
+		if .End in m.state_flags[cs] {
 			ts = 0
 		}
 		p += 1

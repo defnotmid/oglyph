@@ -123,11 +123,11 @@ khmer_reorder_syllable :: proc(s: ^Shaper, plan: ^Plan, start, end: int) {
 // Syllables found by `m` over the glyphs' categories.
 @(private)
 syllables_by_category :: proc(s: ^Shaper, m: ^Machine) {
-	clear(&s.scratch_cats)
-	for info in s.info[:s.len] {
-		append(&s.scratch_cats, info.category)
-	}
+	resize(&s.scratch_cats, s.len)
 	resize(&s.scratch_syllables, s.len)
+	for info, i in s.info[:s.len] {
+		s.scratch_cats[i] = info.category
+	}
 	if run_machine(m, s.scratch_cats[:], s.scratch_syllables[:]) {
 		s.flags += {.Has_Broken_Syllable}
 	}

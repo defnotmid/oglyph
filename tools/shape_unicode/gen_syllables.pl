@@ -60,9 +60,7 @@ for my $name (qw(indic khmer myanmar use)) {
 	my %arrays;
 	for my $a (qw(trans_keys key_spans index_offsets indicies trans_targs trans_actions to_state_actions from_state_actions eof_trans)) {
 		$hh =~ /static const \w+(?: \w+)? ${m}_$a\[\] = \{(.*?)\};/s or die "$name: no $a";
-		my @v = ($1 =~ /(-?\d+)/g);
-		$arrays{$a} = \@v;
-		print "\@(private, rodata)\n${NAME}_MACHINE_" . uc($a) . " := [" . scalar(@v) . "]i16 {\n" . rows(16, @v) . "}\n\n";
+		$arrays{$a} = [($1 =~ /(-?\d+)/g)];
 	}
 	$hh =~ /static const int ${name}_syllable_machine_start = (\d+);/ or die "$name: no start";
 	my $start = $1;
@@ -72,6 +70,40 @@ for my $name (qw(indic khmer myanmar use)) {
 	my $from_ts = $1;
 	$hh =~ /switch \( ${m}_to_state_actions\[cs\] \) \{\s*case (\d+):\s*(?:#line[^\n]*\n\s*)?\{ts = 0;\}/s or die "$name: no to-state action";
 	my $to_ts = $1;
+
+	# Ragel's flat tables unpacked into one transition per state and
+	# category: the next state in the low byte, the action in the high.
+	# The last column is every category past the others (each state's
+	# default transition); end of input has its own entry per state.
+	my ($keys, $spans, $offsets, $indicies, $targs, $actions) = @arrays{qw(trans_keys key_spans index_offsets indicies trans_targs trans_actions)};
+	my $states = scalar @$spans;
+	my $max_key = 0;
+	for my $k (@$keys) {
+		$max_key = $k if $k > $max_key;
+	}
+	my $columns = $max_key + 2;
+	my $entry = sub {
+		my ($trans) = @_;
+		my ($targ, $action) = ($targs->[$trans], $actions->[$trans]);
+		die "$name: transition $trans does not fit a byte each" if $targ < 0 || $targ > 255 || $action < 0 || $action > 255;
+		my $e = $targ | $action << 8;
+		die "$name: transition $trans is the no-transition entry" if $e == 0xffff;
+		return $e;
+	};
+	my (@table, @eof, @flags);
+	for my $cs (0 .. $states - 1) {
+		my ($lo, $hi, $span) = ($keys->[2 * $cs], $keys->[2 * $cs + 1], $spans->[$cs]);
+		for my $c (0 .. $columns - 1) {
+			my $k = $span > 0 && $lo <= $c && $c <= $hi ? $c - $lo : $span;
+			push @table, $entry->($indicies->[$offsets->[$cs] + $k]);
+		}
+		my $eof = $arrays{eof_trans}[$cs];
+		push @eof, $eof > 0 ? $entry->($eof - 1) : 0xffff;
+		push @flags, ($arrays{from_state_actions}[$cs] == $from_ts ? 1 : 0) | ($arrays{to_state_actions}[$cs] == $to_ts ? 2 : 0);
+	}
+	print "\@(private, rodata)\n${NAME}_MACHINE_TABLE := [$states * $columns]u16 {\n" . rows($columns, @table) . "}\n\n";
+	print "\@(private, rodata)\n${NAME}_MACHINE_EOF := [$states]u16 {\n" . rows(16, @eof) . "}\n\n";
+	print "\@(private, rodata)\n${NAME}_MACHINE_STATE_FLAGS := [$states]Machine_State_Flags {\n" . rows(16, map { $_ == 3 ? '{.Start, .End}' : $_ == 1 ? '{.Start}' : $_ == 2 ? '{.End}' : '{}' } @flags) . "}\n\n";
 
 	# The transition actions, each one of a few forms.
 	$hh =~ /switch \( ${m}_trans_actions\[_trans\] \) \{(.*?)\n\t\}\n\n_again:/s or die "$name: no actions";
@@ -123,12 +155,13 @@ for my $name (qw(indic khmer myanmar use)) {
 	print "}\n\n";
 	print "\@(private, rodata)\n${NAME}_MACHINE_ACT_TYPES := [" . ($max_act + 1) . "]i8 {" . join(', ', map { $act_type{$_} // -1 } 0 .. $max_act) . "}\n\n";
 	print "\@(private)\n${NAME}_MACHINE := Machine {\n";
-	for my $a (qw(trans_keys key_spans index_offsets indicies trans_targs trans_actions to_state_actions from_state_actions eof_trans)) {
-		print "\t$a = ${NAME}_MACHINE_" . uc($a) . "[:],\n";
-	}
+	print "\ttable = ${NAME}_MACHINE_TABLE[:],\n";
+	print "\tcolumns = $columns,\n";
+	print "\teof = ${NAME}_MACHINE_EOF[:],\n";
+	print "\tstate_flags = ${NAME}_MACHINE_STATE_FLAGS[:],\n";
 	print "\tactions = ${NAME}_MACHINE_ACTIONS[:],\n";
 	print "\tact_types = ${NAME}_MACHINE_ACT_TYPES[:],\n";
-	print "\tstart = $start,\n\tfrom_ts = $from_ts,\n\tto_ts = $to_ts,\n";
+	print "\tstart = $start,\n";
 	my $broken = $type_index{"${name}_broken_cluster"} // die "$name: no broken cluster type";
 	print "\tbroken = $broken,\n}\n\n";
 }
