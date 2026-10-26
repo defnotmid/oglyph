@@ -49,7 +49,10 @@ shaping), a `Plan` per script, direction, language and set of features,
 and a `Shaper` per shaping call at a time (a warm shaper allocates
 nothing). `sh.script_runs` gives each character's script for splitting
 text into runs; bidi and line breaking are the caller's. A plan is for the
-face's instance as it is when made: after `ft.set_variations`, plan again.
+face's instance as it is when made: after `ft.set_variations`, plan again,
+unless `sh.plan_variations` (the FeatureVariations record each table
+follows at the instance) is unchanged, so instances with the same records
+can share a plan.
 
 ## How it shapes
 

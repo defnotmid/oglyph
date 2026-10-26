@@ -222,7 +222,8 @@ add_pause :: proc(p: ^Planner, kind: Table_Kind, pause := Pause.None) {
 // feature settings: their tags and values decide the plan, their ranges
 // are applied per call (`shape` takes them again). The plan is for the
 // face's instance as it is now (FeatureVariations pick lookups by it):
-// after set_variations, plan again. Scratch comes from the temp allocator.
+// after set_variations, plan again, unless `plan_variations` gives the
+// same records. Scratch comes from the temp allocator.
 plan_init :: proc(p: ^Plan, layout: ^Layout, f: ^ft.Face, script: Script, direction: Direction, language: Tag = 0, features: []Feature = nil, allocator := context.allocator) {
 	p^ = {layout = layout, script = script, direction = direction, allocator = allocator}
 	for kind in Table_Kind {
@@ -683,12 +684,28 @@ feature_table :: proc(l: ^Layout, kind: Table_Kind, index: int, variation: int) 
 	return offset16(d, t.features, t.features + 2 + 6 * index + 4)
 }
 
-// The first FeatureVariations record whose conditions the normalized
-// coordinates meet; -1 for none.
-@(private)
-feature_variation_index :: proc(l: ^Layout, kind: Table_Kind, coords: []i16) -> int {
-	d := l.data
-	fv := l.tables[kind].feature_variations
+// The FeatureVariations record each table's lookups follow at the face's
+// instance (-1 for none), read from its GSUB and GPOS headers: instances
+// with the same records plan alike, so they can share their plans.
+plan_variations :: proc(f: ^ft.Face) -> (records: [Table_Kind]i32) {
+	d := f.data
+	for kind in Table_Kind {
+		// The table layout_init finds, its header read as
+		// layout_table_init reads it.
+		at, _ := find_table(f, "GSUB" if kind == .GSUB else "GPOS")
+		fv := 0
+		if at != 0 && ft.read_u16(d, at) == 1 && ft.read_u16(d, at + 2) >= 1 {
+			fv = offset32(d, at, at + 10)
+		}
+		records[kind] = i32(feature_variation_record(d, fv, f.coords[:f.axis_count]))
+	}
+	return
+}
+
+// The first record of the FeatureVariations table at `fv` (0 for none)
+// whose conditions the normalized coordinates meet; -1 for none.
+@(private = "file")
+feature_variation_record :: proc(d: []u8, fv: int, coords: []i16) -> int {
 	if fv == 0 || ft.read_u16(d, fv) != 1 {
 		return -1
 	}
@@ -841,7 +858,7 @@ compile :: proc(p: ^Planner, f: ^ft.Face, language: Tag) {
 	// Each stage's lookups: the required feature's, then each feature's,
 	// sorted by lookup index with duplicates merged.
 	for kind in Table_Kind {
-		variation := feature_variation_index(l, kind, f.coords[:f.axis_count])
+		variation := feature_variation_record(l.data, l.tables[kind].feature_variations, f.coords[:f.axis_count])
 		lookups := &plan.lookups[kind]
 		last := 0
 		pause := 0
