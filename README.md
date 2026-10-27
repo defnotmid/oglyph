@@ -4,8 +4,10 @@
 
 Native Odin fonts and text shaping: `oglyph/font` reads TrueType and
 OpenType fonts, `oglyph/shape` shapes text with them the way HarfBuzz does,
-the reference it is tested against. Core only (no C library), every read of
-the font bounds-checked. MIT licensed ([LICENSE](LICENSE)).
+the reference it is tested against, and finds what a paragraph layout
+needs from the text (scripts, bidi levels, line break opportunities). Core
+only (no C library), every read of the font bounds-checked. MIT licensed
+([LICENSE](LICENSE)).
 
 ## Packages
 
@@ -16,8 +18,9 @@ the font bounds-checked. MIT licensed ([LICENSE](LICENSE)).
   variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
   gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
   instance, and outlines, advances and shaping follow it.
-- **`shape`**: OpenType shaping: Unicode properties, script runs and
-  normalization from the Unicode 17.0.0 character database, HarfBuzz's
+- **`shape`**: OpenType shaping: Unicode properties, script runs, bidi
+  levels, line break opportunities (UAX #14) and normalization from the
+  Unicode 17.0.0 character database, HarfBuzz's
   shapers (default, Arabic, Hebrew, Thai, Hangul, Indic, Khmer, Myanmar,
   the Universal Shaping Engine) with its syllable machines, GSUB and GPOS
   lookups, the legacy `kern` table, fallback mark positioning, feature
@@ -48,11 +51,31 @@ Three owners, three lifetimes: a `Layout` per face (read-only while
 shaping), a `Plan` per script, direction, language and set of features,
 and a `Shaper` per shaping call at a time (a warm shaper allocates
 nothing). `sh.script_runs` gives each character's script for splitting
-text into runs; bidi and line breaking are the caller's. A plan is for the
+text into runs, `sh.bidi_levels` each one's bidi level and `sh.line_breaks`
+where a line may or must end after it (below); laying the lines out is the
+caller's. A plan is for the
 face's instance as it is when made: after `ft.set_variations`, plan again,
 unless `sh.plan_variations` (the FeatureVariations record each table
 follows at the instance) is unchanged, so instances with the same records
 can share a plan.
+
+## Line breaks and bidi
+
+`sh.line_breaks(text, out)` marks, after each character, whether a line
+may end there, must (after a hard line break, and at the end), or can't:
+UAX #14's default rules at Unicode 17.0.0, each code point's class
+resolved as its rule LB1 does by default, so Thai, Lao, Khmer and Myanmar
+words (class SA) don't break inside, there being no dictionary. It gives
+every one of Unicode's 19,338 conformance cases (LineBreakTest.txt) as
+listed, at about 8 ns a character (`-o:speed`, Ryzen 9 9900X3D). The
+classes live in a two-stage table of their own (44.5 KB) beside the
+shaping properties.
+
+`sh.bidi_levels(classes, levels)` resolves the characters' classes
+(`sh.char_bidi_class`, the database's Bidi_Class) into levels for a line
+in a left-to-right paragraph: UAX #9's weak and neutral rules, without
+explicit embeddings, isolates or bracket pairs, whose controls it ignores
+(embeddings, as rule X9 does) or takes as neutrals (isolates).
 
 ## How it shapes
 
@@ -147,6 +170,7 @@ odin test font -vet -strict-style
 odin test shape -vet -strict-style
 odin run tools/shape_corpus -o:speed -- -quiet       # against the system libharfbuzz
 odin run tools/shape_corpus -o:speed -- -random:200 -quiet
+odin run tools/line_break_test -o:speed -- LineBreakTest.txt  # Unicode 17.0.0's (ucd/auxiliary)
 perl tools/shape_unicode/gen.pl HARFBUZZ/src > shape/unicode_data.odin        # HarfBuzz 14.6.0's source
 perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odin
 ```

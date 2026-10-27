@@ -11,11 +11,12 @@
 # (14.6.0).
 #
 # Per code point: general category, canonical combining class, script,
-# joining type, Indic category and position, USE category, as an index
+# joining type, Indic category and position, USE category, bidi class, as an index
 # into a table of the distinct combinations (two-stage: a block table,
 # then the blocks, deduplicated). Then the bidi mirroring pairs, the
-# canonical decompositions (first level, one or two code points) and the
-# primary compositions.
+# canonical decompositions (first level, one or two code points), the
+# primary compositions, and each code point's line breaking class (UAX #14)
+# in a two-stage table of its own.
 use strict;
 use warnings;
 use Unicode::UCD qw(prop_invmap prop_values prop_value_aliases);
@@ -181,6 +182,10 @@ my %gc_index = map { $GC[$_] => $_ } 0 .. $#GC;
 my @JT = qw(U L R D C T Alaph Dalath_Rish);
 my %jt_index = map { $JT[$_] => $_ } 0 .. $#JT;
 
+# Bidi classes in UAX #9's order.
+my @BC = qw(L R AL EN ES ET AN CS NSM BN B S WS ON LRE LRO RLE RLO PDF LRI RLI FSI PDI);
+my %bc_index = map { $BC[$_] => $_ } 0 .. $#BC;
+
 # Scripts: Unknown, Common and Inherited first, then the rest by name.
 my @scripts = sort grep { $_ ne 'Unknown' && $_ ne 'Common' && $_ ne 'Inherited' } map { (prop_value_aliases('sc', $_))[1] } prop_values('sc');
 unshift @scripts, 'Unknown', 'Common', 'Inherited';
@@ -197,8 +202,9 @@ my $ccc = expand('ccc');
 my $sc = expand('sc');
 my $jt = expand('jt');
 my $jg = expand('jg');
+my $bc = expand('bc');
 
-# Records: the distinct (gc, ccc, script, joining, Indic, USE) combinations.
+# Records: the distinct (gc, ccc, script, joining, Indic, USE, bidi) combinations.
 my %record_index;
 my @records;
 my @cp_record = (0) x $MAX;
@@ -214,12 +220,14 @@ for my $cp (0 .. $MAX - 1) {
 	die "gc $gc->[$cp]" unless defined $g;
 	my $s = $sc_index{$sc->[$cp]};
 	die "sc $sc->[$cp]" unless defined $s;
-	my $key = join(',', $g, $ccc->[$cp], $s, $j, $indic[$cp], $use[$cp]);
+	my $b = $bc_index{$bc->[$cp]};
+	die "bc $bc->[$cp]" unless defined $b;
+	my $key = join(',', $g, $ccc->[$cp], $s, $j, $indic[$cp], $use[$cp], $b);
 	my $r = $record_index{$key};
 	if (!defined $r) {
 		$r = scalar @records;
 		$record_index{$key} = $r;
-		push @records, [$g, $ccc->[$cp], $s, $j, $indic[$cp] & 0xFF, $indic[$cp] >> 8, $use[$cp]];
+		push @records, [$g, $ccc->[$cp], $s, $j, $indic[$cp] & 0xFF, $indic[$cp] >> 8, $use[$cp], $b];
 	}
 	$cp_record[$cp] = $r;
 }
@@ -293,6 +301,60 @@ for my $d (@decomps) {
 }
 @comps = sort { $a->[0] <=> $b->[0] || $a->[1] <=> $b->[1] } @comps;
 
+# Line breaking (UAX #14): each code point's Line_Break class as LB1
+# resolves it by default (AI, SG, XX: AL; SA: CM if Mn or Mc, else AL; CJ:
+# NS), quotation marks split by Pi and Pf (LB15a, LB15b, LB19), with
+# whether it is East Asian (ea F, W or H: LB19a, LB30) and an unassigned
+# Extended_Pictographic (LB30b): class | east_asian << 6 | pictographic << 7.
+my @LB = qw(AL AK AP AS B2 BA BB BK CB CL CM CP CR EB EM EX GL H2 H3 HH HL HY ID IN IS JL JT JV LF NL NS NU OP PO PR QU QU_Pi QU_Pf RI SP SY VF VI WJ ZW ZWJ);
+my %lb_index = map { $LB[$_] => $_ } 0 .. $#LB;
+die "too many line break classes" if @LB > 63;
+my $lb = expand('lb');
+my $ea = expand('ea');
+my $xp = expand('Extended_Pictographic');
+my @cp_lb = (0) x $MAX;
+for my $cp (0 .. $MAX - 1) {
+	my $c = $lb->[$cp];
+	my $g = $gc->[$cp];
+	if ($c eq 'AI' || $c eq 'SG' || $c eq 'XX') {
+		$c = 'AL';
+	} elsif ($c eq 'SA') {
+		$c = ($g eq 'Mn' || $g eq 'Mc') ? 'CM' : 'AL';
+	} elsif ($c eq 'CJ') {
+		$c = 'NS';
+	} elsif ($c eq 'QU' && ($g eq 'Pi' || $g eq 'Pf')) {
+		$c = "QU_$g";
+	}
+	my $i = $lb_index{$c};
+	die sprintf("lb %s at %X", $c, $cp) unless defined $i;
+	my $e = $ea->[$cp];
+	$i |= 1 << 6 if $e eq 'F' || $e eq 'W' || $e eq 'H';
+	$i |= 1 << 7 if $xp->[$cp] eq 'Y' && $g eq 'Cn';
+	$cp_lb[$cp] = $i;
+}
+my ($lb_shift, $lb_size, $lb_blocks, $lb_stage1);
+for my $shift (4 .. 10) {
+	my $size = 1 << $shift;
+	my %block_at;
+	my @blocks;
+	my @stage1;
+	for (my $cp = 0; $cp < $MAX; $cp += $size) {
+		my $key = join(',', @cp_lb[$cp .. $cp + $size - 1]);
+		my $at = $block_at{$key};
+		if (!defined $at) {
+			$at = scalar(@blocks) * $size;
+			$block_at{$key} = $at;
+			push @blocks, [@cp_lb[$cp .. $cp + $size - 1]];
+		}
+		push @stage1, $at;
+	}
+	my $total = 2 * @stage1 + @blocks * $size;
+	if (!defined $lb_size || $total < $lb_size) {
+		($lb_shift, $lb_size, $lb_blocks, $lb_stage1) = ($shift, $total, \@blocks, \@stage1);
+	}
+}
+die "line break offsets exceed u16" if @$lb_blocks * (1 << $lb_shift) > 65536;
+
 # ---- output -----------------------------------------------------------------------
 
 sub rows {
@@ -322,6 +384,11 @@ print "Joining :: enum u8 {\n";
 print "\t$_,\n" for @JT;
 print "}\n\n";
 
+print "// Bidi classes (UAX #9).\n";
+print "Bidi_Class :: enum u8 {\n";
+print "\t$_,\n" for @BC;
+print "}\n\n";
+
 print "Script :: enum u8 {\n";
 print "\t$_,\n" for @scripts;
 print "}\n\n";
@@ -333,7 +400,7 @@ for my $s (@scripts) {
 }
 print "}\n\n";
 
-print "Char_Props :: struct {\n\tgc:             General_Category,\n\tccc:            u8,\n\tscript:         Script,\n\tjoining:        Joining,\n\t// HarfBuzz's syllabic categories (INDIC_*, USE_*) and Indic position\n\t// (POS_*).\n\tindic:          u8,\n\tindic_position: u8,\n\tuse:            u8,\n}\n\n";
+print "Char_Props :: struct {\n\tgc:             General_Category,\n\tccc:            u8,\n\tscript:         Script,\n\tjoining:        Joining,\n\t// HarfBuzz's syllabic categories (INDIC_*, USE_*) and Indic position\n\t// (POS_*).\n\tindic:          u8,\n\tindic_position: u8,\n\tuse:            u8,\n\tbidi:           Bidi_Class,\n}\n\n";
 sub constants {
 	my ($prefix, $comment, $e) = @_;
 	print "// $comment\n";
@@ -361,8 +428,8 @@ print "// Each code point's index in PROPS_RECORDS.\n";
 print "\@(private, rodata)\nPROPS_BLOCKS := [" . scalar(@flat) . "]u16 {\n" . rows(24, @flat) . "}\n\n";
 print "\@(private, rodata)\nPROPS_RECORDS := [" . scalar(@records) . "]Char_Props {\n";
 for my $r (@records) {
-	my ($g, $c, $s, $j, $ic, $ip, $u) = @$r;
-	print "\t{.$GC[$g], $c, .$scripts[$s], .$JT[$j], $ic, $ip, $u},\n";
+	my ($g, $c, $s, $j, $ic, $ip, $u, $b) = @$r;
+	print "\t{.$GC[$g], $c, .$scripts[$s], .$JT[$j], $ic, $ip, $u, .$BC[$b]},\n";
 }
 print "}\n\n";
 
@@ -374,7 +441,20 @@ print "// points (0 for none); sorted.\n";
 print "\@(private, rodata)\nDECOMPOSITIONS := [" . scalar(@decomps) . "][3]u32 {\n" . rows(4, map { sprintf("{0x%04X, 0x%04X, 0x%04X}", @$_) } @decomps) . "}\n\n";
 
 print "// Primary compositions: the pair, then the composite; sorted by pair.\n";
-print "\@(private, rodata)\nCOMPOSITIONS := [" . scalar(@comps) . "][3]u32 {\n" . rows(4, map { sprintf("{0x%04X, 0x%04X, 0x%04X}", @$_) } @comps) . "}\n";
+print "\@(private, rodata)\nCOMPOSITIONS := [" . scalar(@comps) . "][3]u32 {\n" . rows(4, map { sprintf("{0x%04X, 0x%04X, 0x%04X}", @$_) } @comps) . "}\n\n";
 
-printf STDERR "records %d, shift %d, stage1 %d, blocks %d (%d bytes), mirrors %d, decompositions %d, compositions %d\n",
-	scalar(@records), $best_shift, scalar(@$best_stage1), scalar(@$best_blocks), $best_size, scalar(@mirrors), scalar(@decomps), scalar(@comps);
+print "// Line breaking classes (UAX #14) as LB1 resolves them by default, the\n";
+print "// quotation marks (QU) split by general category Pi and Pf.\n";
+print "Line_Break_Class :: enum u8 {\n";
+print "\t$_,\n" for @LB;
+print "}\n\n";
+print "\@(private)\nLB_SHIFT :: $lb_shift\n\n";
+print "// Where each block of 1 << LB_SHIFT code points starts in LB_BLOCKS.\n";
+print "\@(private, rodata)\nLB_STAGE1 := [" . scalar(@$lb_stage1) . "]u16 {\n" . rows(16, @$lb_stage1) . "}\n\n";
+my @lb_flat = map { @$_ } @$lb_blocks;
+print "// Each code point's Line_Break_Props.\n";
+print "\@(private, rodata)\nLB_BLOCKS := [" . scalar(@lb_flat) . "]u8 {\n" . rows(24, @lb_flat) . "}\n";
+
+printf STDERR "records %d, shift %d, stage1 %d, blocks %d (%d bytes), mirrors %d, decompositions %d, compositions %d, line break shift %d, blocks %d (%d bytes)\n",
+	scalar(@records), $best_shift, scalar(@$best_stage1), scalar(@$best_blocks), $best_size, scalar(@mirrors), scalar(@decomps), scalar(@comps),
+	$lb_shift, scalar(@$lb_blocks), $lb_size;

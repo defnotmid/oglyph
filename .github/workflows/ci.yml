@@ -58,3 +58,11 @@ jobs:
           # The HarfBuzz comparison needs libharfbuzz to run; it is
           # type-checked here.
           odin check tools/shape_corpus -vet -strict-style
+
+      - name: Line breaks (Unicode's conformance test)
+        run: |
+          curl -fsSL --retry 3 -o build/LineBreakTest.txt \
+            https://www.unicode.org/Public/17.0.0/ucd/auxiliary/LineBreakTest.txt
+          echo "e69884e0dde6a8724873f885d68c52dc14518abf9ae4ca9e2283b8773db3b752  build/LineBreakTest.txt" | shasum -a 256 -c
+          odin build tools/line_break_test -vet -strict-style -o:speed -out:build/line_break_test
+          build/line_break_test build/LineBreakTest.txt
