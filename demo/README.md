@@ -47,7 +47,7 @@ a pinned tag; the first render fetches the darbuka's samples (VCSL, pinned in
   `instruments/sfx.json`) so the demo needs no onimite checkout, and `.gitignore` for what
   `fetch.sh` downloads.
 
-Mix (`onimite audio analyze demo/video.lua`): about -14.4 LUFS integrated, -1.5 dBTP; the
+Mix (`onimite audio analyze demo/video.lua`): about -14.5 LUFS integrated, -2.0 dBTP; the
 Devanagari scene dips to the drone and the hands.
 
 ## Credits

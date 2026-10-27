@@ -45,7 +45,7 @@ end
 video {
   width = 1920, height = 1080, fps = beat.FPS, background = ui.BG,
   audio = { { "score", fade_out = 0.5 } },
-  master_gain_db = 4.5, -- about -14.4 LUFS, as the other demos
+  master_gain_db = 4.5, -- about -14.5 LUFS, as the other demos
   render = function(f)
     local b = beat.gbeat(f)
     rect { x = 0, y = 0, w = 1920, h = 1080, fill = ui.BG }
