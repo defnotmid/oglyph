@@ -5,7 +5,10 @@
 Native Odin fonts and text shaping: `oglyph/font` reads TrueType and
 OpenType fonts, `oglyph/shape` shapes text with them the way HarfBuzz does,
 the reference it is tested against, and finds what a paragraph layout
-needs from the text (scripts, bidi levels, line break opportunities). Core
+needs from the text (scripts, bidi levels, line break opportunities), and
+`oglyph/collection` keeps a set of faces to find by family and fall back
+through. A paragraph layout (lines, wrapping, alignment) and drawing are
+the caller's: ovg's are built on these three. Core
 only (no C library), every read of the font bounds-checked. MIT licensed
 ([LICENSE](LICENSE)).
 
@@ -26,6 +29,15 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   lookups, the legacy `kern` table, fallback mark positioning, feature
   settings over all or part of the text, and variable fonts'
   FeatureVariations and device deltas.
+- **`collection`**: font faces found by family, weight and style (CSS
+  font matching, through an index by family), each a `Face_Id` that stays
+  with its face; per-character fallback (`collection_fallback`: the first
+  face with a glyph, emoji sequences kept in one colour face, combining
+  marks with their base); and the files the faces are instances of
+  (`Files`, shared between collections, on any thread: each file's
+  shaping tables and plans made once, `file_plan`). A renderer that draws
+  outlines only says so (`outlines_only`), and a glyph a face has only as
+  a bitmap then counts as missing.
 
 ## Use
 
@@ -168,6 +180,7 @@ real fonts and shape and draw them with bounds checks on.
 ```sh
 odin test font -vet -strict-style
 odin test shape -vet -strict-style
+odin test collection -vet -strict-style
 odin run tools/shape_corpus -o:speed -- -quiet       # against the system libharfbuzz
 odin run tools/shape_corpus -o:speed -- -random:200 -quiet
 odin run tools/line_break_test -o:speed -- LineBreakTest.txt  # Unicode 17.0.0's (ucd/auxiliary)

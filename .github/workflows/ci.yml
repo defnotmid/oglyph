@@ -55,6 +55,7 @@ jobs:
           mkdir -p build
           odin test font -vet -strict-style -out:build/font_test
           odin test shape -vet -strict-style -out:build/shape_test
+          odin test collection -vet -strict-style -out:build/collection_test
           # The HarfBuzz comparison needs libharfbuzz to run; it is
           # type-checked here.
           odin check tools/shape_corpus -vet -strict-style
