@@ -17,11 +17,11 @@ import sh "../shape"
 // borrowed and must outlive the collection.
 
 // A face of a Collection, for as long as the collection holds it: the
-// collection that made it and the face's index in its id table. Faces added
+// collection that made it and the face's row in its `rows`. Faces added
 // before or after it keep it, a removed face's id names no face, and ids
 // aren't reused; Face_Id{} names none, and neither does an id another
-// collection made. Keep a face by its id: the pointer collection_face gives
-// is for immediate use (adding faces moves them).
+// collection made. A face never moves: its pointer (collection_face) holds
+// until it is removed, while other threads add faces.
 Face_Id :: struct {
 	collection: u32,
 	index:      u32,
@@ -53,17 +53,23 @@ Face :: struct {
 }
 
 Collection :: struct {
-	// Its allocator is the collection's (collection_allocator).
-	faces:          [dynamic]Face,
+	// Every face the collection made, by id (Face_Id.index; the fallback's
+	// is 0), where it stays: rows never move, so a face can be read on one
+	// thread while another adds faces. Its allocator is the collection's
+	// (collection_allocator).
+	rows:           Rows(Face),
+	// The faces matched and fallen back through, in order (collection_add's
+	// `before`): rows of `rows`.
+	faces:          [dynamic]^Face,
 	// The font files its faces are instances of: collection_init's, shared
 	// with other collections, else its own (`owns_files`).
 	files:          ^Files,
 	owns_files:     bool,
-	// Used when nothing matches, and as the last fallback for glyphs.
-	fallback:       Face,
-	// Colour emoji face tried after `faces` (collection_set_emoji); never
-	// matched by family.
-	emoji:          Maybe(Face),
+	// Used when nothing matches, and as the last fallback for glyphs (row 0).
+	fallback:       ^Face,
+	// Colour emoji face tried after `faces` (collection_set_emoji), nil
+	// without one; never matched by family.
+	emoji:          ^Face,
 	// The family text that names none is drawn in (borrowed); empty, or a
 	// family no face has: every face competes by weight and style.
 	default_family: string,
@@ -72,9 +78,8 @@ Collection :: struct {
 	outlines_only:  bool,
 	// Which collection this is (Face_Id.collection), set with its first id.
 	serial:         u32,
-	// Per face id, where its face is: its index in `faces`, else
-	// PLACE_FALLBACK, PLACE_EMOJI or PLACE_GONE (removed, or an emoji face
-	// replaced).
+	// Per face id, its face's index in `faces`; -1 for the fallback, the
+	// emoji face and faces gone.
 	places:         [dynamic]i32,
 	// The faces of `faces` by a hash of their family (family_hash),
 	// ascending, with what finding one scores: a family's faces lie
@@ -94,11 +99,7 @@ Family_Entry :: struct {
 }
 
 @(private = "file")
-PLACE_FALLBACK :: -1
-@(private = "file")
-PLACE_EMOJI :: -2
-@(private = "file")
-PLACE_GONE :: -3
+PLACE_NONE :: -1
 
 // Reads face `index` of a font or collection file at the instance
 // `variations` pick (user values per axis tag, `{{"wght", 700}}`; axes not
@@ -144,7 +145,8 @@ face_identity :: proc(face: ^ft.Face, allocator := context.allocator) -> (family
 // files are `files` (shared with the other collections given it), else a
 // table of its own. `outlines_only`: see Collection.
 collection_init :: proc(c: ^Collection, fallback_data: []u8, allocator := context.allocator, files: ^Files = nil, outlines_only := false) -> bool {
-	c.faces = make([dynamic]Face, allocator)
+	rows_init(&c.rows, allocator)
+	c.faces = make([dynamic]^Face, allocator)
 	c.places = make([dynamic]i32, allocator)
 	c.by_family = make([dynamic]Family_Entry, allocator)
 	c.files = files
@@ -152,13 +154,15 @@ collection_init :: proc(c: ^Collection, fallback_data: []u8, allocator := contex
 	face := face_load(fallback_data) or_return
 	face.file = file_row(collection_files(c), &face)
 	face.family, face.weight, face.italic = face.file.family, face.file.weight, face.file.italic
-	face.id = face_id_new(c, PLACE_FALLBACK)
-	c.fallback = face
+	collection_serial(c)
+	face.id = c.fallback.id
+	c.fallback^ = face
 	return true
 }
 
 collection_destroy :: proc(c: ^Collection) {
 	allocator := collection_allocator(c)
+	rows_destroy(&c.rows)
 	delete(c.faces)
 	delete(c.places)
 	delete(c.by_family)
@@ -171,8 +175,8 @@ collection_destroy :: proc(c: ^Collection) {
 
 // The collection's allocator: its faces'.
 collection_allocator :: proc(c: ^Collection) -> mem.Allocator {
-	if c.faces.allocator.procedure != nil {
-		return c.faces.allocator
+	if c.rows.allocator.procedure != nil {
+		return c.rows.allocator
 	}
 	return context.allocator
 }
@@ -182,14 +186,13 @@ collection_allocator :: proc(c: ^Collection) -> mem.Allocator {
 // data is borrowed. Not while other threads read the collection.
 collection_set_emoji :: proc(c: ^Collection, data: []u8) -> (id: Face_Id, ok: bool) {
 	face := face_load(data) or_return
-	if old, had := &c.emoji.?; had {
-		c.places[old.id.index] = PLACE_GONE
+	if c.emoji != nil {
+		c.emoji.id = {}
 	}
 	face.file = file_row(collection_files(c), &face)
 	face.family, face.weight, face.italic = face.file.family, face.file.weight, face.file.italic
-	face.id = face_id_new(c, PLACE_EMOJI)
-	c.emoji = face
-	return face.id, true
+	c.emoji = face_add(c, face, PLACE_NONE)
+	return c.emoji.id, true
 }
 
 // Adds every face of a TTF/OTF/TTC, in order before face `before` (at the
@@ -198,13 +201,15 @@ collection_set_emoji :: proc(c: ^Collection, data: []u8) -> (id: Face_Id, ok: bo
 // weight from a wght setting and the style from ital or slnt when given.
 // Faces of data added before (to this collection or one sharing its
 // files) share its file's tables and plans: another instance costs about
-// its glyphs. Returns the faces added: faces[at:][:added] before they
-// move (`at` is their place when `before` is past the last). Not while
-// other threads read the collection (faces move; their ids stay).
+// its glyphs. Returns how many faces were added: faces[at:][:added], `at`
+// being `before`, else the end. Other threads may read faces they hold the ids
+// of meanwhile (collection_face: faces never move), but not match or fall
+// back through the collection.
 collection_add :: proc(c: ^Collection, data: []u8, before := max(int), variations: []ft.Variation = nil) -> (added: int) {
 	allocator := collection_allocator(c)
 	// A collection never initialized takes its allocator here, not from
 	// the first append.
+	c.rows.allocator = allocator
 	c.faces.allocator = allocator
 	c.by_family.allocator = allocator
 	files := collection_files(c)
@@ -225,10 +230,10 @@ collection_add :: proc(c: ^Collection, data: []u8, before := max(int), variation
 				face.italic = v.value != 0
 			}
 		}
-		face.id = face_id_new(c, i32(len(c.faces)))
-		append(&c.faces, face)
-		h := family_hash(face.family)
-		inject_at(&c.by_family, family_first(c, h), Family_Entry{h, face.id, face.family, i32(face.weight), face.italic})
+		row := face_add(c, face, i32(len(c.faces)))
+		append(&c.faces, row)
+		h := family_hash(row.family)
+		inject_at(&c.by_family, family_first(c, h), Family_Entry{h, row.id, row.family, i32(row.weight), row.italic})
 		added += 1
 	}
 	if at := len(c.faces) - added; before < at {
@@ -242,8 +247,8 @@ collection_add :: proc(c: ^Collection, data: []u8, before := max(int), variation
 // stays in the collection's files). Not while other threads read the
 // collection.
 collection_remove :: proc(c: ^Collection, i: int) {
-	face := &c.faces[i]
-	c.places[face.id.index] = PLACE_GONE
+	face := c.faces[i]
+	c.places[face.id.index] = PLACE_NONE
 	h := family_hash(face.family)
 	for k := family_first(c, h); k < len(c.by_family) && c.by_family[k].hash == h; k += 1 {
 		if c.by_family[k].face == face.id {
@@ -251,27 +256,23 @@ collection_remove :: proc(c: ^Collection, i: int) {
 			break
 		}
 	}
+	face.id = {}
 	ordered_remove(&c.faces, i)
 	face_places(c, i)
 }
 
-// Face `id`, for immediate use (adding faces moves it); nil once the face
-// is removed (or, for an emoji face, replaced), for Face_Id{}, for an id
-// of another collection and without a collection.
+// Face `id`, where it stays until it is removed (adding faces moves none,
+// so other threads may add faces meanwhile); nil once the face is removed
+// (or, for an emoji face, replaced), for Face_Id{}, for an id of another
+// collection and without a collection. It reads only the face's row.
 collection_face :: proc(c: ^Collection, id: Face_Id) -> ^Face {
-	if c == nil || c.serial == 0 || id.collection != c.serial || int(id.index) >= len(c.places) {
+	if c == nil || id.collection == 0 || id.collection != c.serial {
 		return nil
 	}
-	switch at := c.places[id.index]; at {
-	case PLACE_FALLBACK:
-		return &c.fallback
-	case PLACE_EMOJI:
-		return &c.emoji.?
-	case PLACE_GONE:
-		return nil
-	case:
-		return &c.faces[at]
+	if f := rows_at(&c.rows, int(id.index)); f != nil && f.id == id {
+		return f
 	}
+	return nil
 }
 
 // The next of the process's collection serials, from 1.
@@ -283,24 +284,32 @@ serial_next :: proc "contextless" () -> u32 {
 @(private = "file")
 serials: u32
 
-// A new face id, its face at `place`. The first one a collection makes
-// (collection_init makes the fallback's first) takes the collection's
-// serial and gives the fallback index 0.
+// The collection's serial and its fallback's row (0), made with its first
+// face: collection_init's fallback, else the first face added (the
+// fallback then a zero face).
 @(private = "file")
-face_id_new :: proc(c: ^Collection, place: i32) -> Face_Id {
-	if c.serial == 0 {
-		if c.places.allocator.procedure == nil {
-			c.places.allocator = collection_allocator(c)
-		}
-		c.serial = serial_next()
-		append(&c.places, PLACE_FALLBACK)
-		c.fallback.id = {c.serial, 0}
-		if place == PLACE_FALLBACK {
-			return c.fallback.id
-		}
+collection_serial :: proc(c: ^Collection) {
+	if c.serial != 0 {
+		return
 	}
+	if c.places.allocator.procedure == nil {
+		c.places.allocator = collection_allocator(c)
+	}
+	c.serial = serial_next()
+	_, c.fallback = rows_append(&c.rows, Face{id = {c.serial, 0}})
+	append(&c.places, PLACE_NONE)
+}
+
+// Adds `face` as a new row with a new id, its index in `faces` at `place`
+// (PLACE_NONE for none).
+@(private = "file")
+face_add :: proc(c: ^Collection, face: Face, place: i32) -> ^Face {
+	collection_serial(c)
+	face := face
+	face.id = {c.serial, u32(c.rows.len)}
+	_, row := rows_append(&c.rows, face)
 	append(&c.places, place)
-	return {c.serial, u32(len(c.places) - 1)}
+	return row
 }
 
 // A hash of a family name that names equal under strings.equal_fold
@@ -340,7 +349,7 @@ family_first :: proc(c: ^Collection, h: u64) -> int {
 	return lo
 }
 
-// The places of faces[from:], after they moved.
+// The places of faces[from:], after they moved in `faces`.
 @(private = "file")
 face_places :: proc(c: ^Collection, from: int) {
 	for f, i in c.faces[from:] {
@@ -387,8 +396,8 @@ collection_find :: proc(c: ^Collection, family: string, weight: int, italic := f
 	if family == "" {
 		// No family asked for: every face competes, the first of the right
 		// style winning.
-		for &f, i in c.faces {
-			if sc := i + score(&f, f.weight, f.italic, want, italic, variations); sc < best_score {
+		for f, i in c.faces {
+			if sc := i + score(f, f.weight, f.italic, want, italic, variations); sc < best_score {
 				best, best_score = i, sc
 			}
 		}
@@ -401,7 +410,7 @@ collection_find :: proc(c: ^Collection, family: string, weight: int, italic := f
 				continue
 			}
 			at := int(c.places[e.face.index])
-			if sc := score(&c.faces[at], int(e.weight), e.italic, want, italic, variations); sc < best_score || (sc == best_score && at < best) {
+			if sc := score(c.faces[at], int(e.weight), e.italic, want, italic, variations); sc < best_score || (sc == best_score && at < best) {
 				best, best_score = at, sc
 			}
 		}

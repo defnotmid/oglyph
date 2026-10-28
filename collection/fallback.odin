@@ -70,14 +70,14 @@ collection_glyph :: proc(c: ^Collection, r: rune, primary: Face_Id) -> (Face_Id,
 			return primary, g
 		}
 	}
-	for &f in c.faces {
+	for f in c.faces {
 		if f.id != primary {
-			if g := glyph_drawable(c, &f, ft.glyph_index(&f.face, r)); g != 0 {
+			if g := glyph_drawable(c, f, ft.glyph_index(&f.face, r)); g != 0 {
 				return f.id, g
 			}
 		}
 	}
-	if e, ok := &c.emoji.?; ok {
+	if e := c.emoji; e != nil {
 		if g := ft.glyph_index(&e.face, r); g != 0 {
 			return e.id, g
 		}
@@ -91,14 +91,14 @@ collection_glyph :: proc(c: ^Collection, r: rune, primary: Face_Id) -> (Face_Id,
 // The first colour (COLR) face with a glyph for `r`: added faces, then the
 // emoji face; Face_Id{} and 0 when none has one.
 collection_emoji_glyph :: proc(c: ^Collection, r: rune) -> (Face_Id, ft.Glyph) {
-	for &f in c.faces {
+	for f in c.faces {
 		if f.colour {
 			if g := ft.glyph_index(&f.face, r); g != 0 {
 				return f.id, g
 			}
 		}
 	}
-	if e, ok := &c.emoji.?; ok && e.colour {
+	if e := c.emoji; e != nil && e.colour {
 		if g := ft.glyph_index(&e.face, r); g != 0 {
 			return e.id, g
 		}

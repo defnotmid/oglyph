@@ -31,7 +31,9 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   FeatureVariations and device deltas.
 - **`collection`**: font faces found by family, weight and style (CSS
   font matching, through an index by family), each a `Face_Id` that stays
-  with its face; per-character fallback (`collection_fallback`: the first
+  with its face, and each face in a row that never moves (`Rows`: chunks
+  of doubling size behind a fixed table), so other threads may read faces
+  they hold the ids of while faces are added; per-character fallback (`collection_fallback`: the first
   face with a glyph, emoji sequences kept in one colour face, combining
   marks with their base); and the files the faces are instances of
   (`Files`, shared between collections, on any thread: each file's
