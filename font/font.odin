@@ -205,7 +205,7 @@ records :: proc "contextless" (d: []u8, at, count: int, $T: typeid) -> []T {
 	if at < 0 || count < 0 || at + count * size_of(T) > len(d) {
 		return nil
 	}
-	#no_bounds_check return ([^]T)(raw_data(d[at:]))[:count]
+	#no_bounds_check return slice.reinterpret([]T, d[at:][:count * size_of(T)])
 }
 
 // `count` records at `at`, or as many as lie in the data.
