@@ -1,5 +1,6 @@
 package shape
 
+import "base:runtime"
 import "core:hash"
 import "core:mem"
 import "core:slice"
@@ -225,6 +226,7 @@ add_pause :: proc(p: ^Planner, kind: Table_Kind, pause := Pause.None) {
 // after set_variations, plan again, unless `plan_variations` gives the
 // same records. Scratch comes from the temp allocator.
 plan_init :: proc(p: ^Plan, layout: ^Layout, f: ^ft.Face, script: Script, direction: Direction, language: Tag = 0, features: []Feature = nil, allocator := context.allocator) {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = allocator == context.temp_allocator)
 	p^ = {layout = layout, script = script, direction = direction, allocator = allocator}
 	for kind in Table_Kind {
 		p.lookups[kind] = make([dynamic]Plan_Lookup, allocator)

@@ -1,5 +1,6 @@
 package collection
 
+import "core:sync"
 import "core:unicode"
 
 import ft "../font"
@@ -43,7 +44,7 @@ collection_fallback :: proc(c: ^Collection, text: []rune, piece: []i32, faces: [
 			if r != '\n' && r != ' ' && r != '\t' {
 				g := ft.Glyph(sh.two_level_get(cmap, int(r)))
 				if g == 0 || (bitmaps && ft.glyph_empty(&face.face, g)) {
-					if f, fg := collection_glyph(c, r, want); fg != 0 {
+					if f, fg := collection_glyph(c, r, want, false); fg != 0 {
 						faces[j] = f
 					}
 				}
@@ -61,49 +62,70 @@ collection_fallback :: proc(c: ^Collection, text: []rune, piece: []i32, faces: [
 	}
 }
 
-// The face with a glyph for `r`: `primary`, else the first of `faces`,
-// then the emoji face, then the fallback; `primary` and 0 when none has
-// one.
-collection_glyph :: proc(c: ^Collection, r: rune, primary: Face_Id) -> (Face_Id, ft.Glyph) {
-	if f := collection_face(c, primary); f != nil {
-		if g := glyph_drawable(c, f, ft.glyph_index(&f.face, r)); g != 0 {
-			return primary, g
+// A face's glyph for `r`, through its file's two-level cmap when prepared.
+@(private = "file")
+face_glyph :: #force_inline proc(f: ^Face, r: rune) -> ft.Glyph {
+	if f.file != nil {
+		if l := sync.atomic_load_explicit(&f.file.shaping, .Acquire); l != nil {
+			return ft.Glyph(sh.two_level_get(&l.cmap, int(r)))
+		}
+	}
+	return ft.glyph_index(&f.face, r)
+}
+
+// The face with a glyph for `r`: `primary` (when `check_primary`), else the
+// first of `faces`, then the emoji face, then the fallback; `primary` and 0
+// when none has one.
+collection_glyph :: proc(c: ^Collection, r: rune, primary: Face_Id, check_primary := true) -> (Face_Id, ft.Glyph) {
+	if check_primary {
+		if f := collection_face(c, primary); f != nil {
+			if g := glyph_drawable(c, f, face_glyph(f, r)); g != 0 {
+				return primary, g
+			}
 		}
 	}
 	for f in c.faces {
 		if f.id != primary {
-			if g := glyph_drawable(c, f, ft.glyph_index(&f.face, r)); g != 0 {
+			if g := glyph_drawable(c, f, face_glyph(f, r)); g != 0 {
 				return f.id, g
 			}
 		}
 	}
 	if e := c.emoji; e != nil {
-		if g := ft.glyph_index(&e.face, r); g != 0 {
+		if g := glyph_drawable(c, e, face_glyph(e, r)); g != 0 {
 			return e.id, g
 		}
 	}
-	if g := ft.glyph_index(&c.fallback.face, r); g != 0 {
-		return c.fallback.id, g
+	if c.fallback != nil {
+		if g := glyph_drawable(c, c.fallback, face_glyph(c.fallback, r)); g != 0 {
+			return c.fallback.id, g
+		}
 	}
 	return primary, 0
 }
 
-// The first colour (COLR) face with a glyph for `r`: added faces, then the
-// emoji face; Face_Id{} and 0 when none has one.
+// The first colour face with a glyph for `r`: added faces, then the emoji
+// face; Face_Id{} and 0 when none has one.
 collection_emoji_glyph :: proc(c: ^Collection, r: rune) -> (Face_Id, ft.Glyph) {
 	for f in c.faces {
-		if f.colour {
-			if g := ft.glyph_index(&f.face, r); g != 0 {
+		if is_colour(c, f) {
+			if g := face_glyph(f, r); g != 0 {
 				return f.id, g
 			}
 		}
 	}
-	if e := c.emoji; e != nil && e.colour {
-		if g := ft.glyph_index(&e.face, r); g != 0 {
+	if e := c.emoji; is_colour(c, e) {
+		if g := face_glyph(e, r); g != 0 {
 			return e.id, g
 		}
 	}
 	return {}, 0
+}
+
+// Whether the collection's renderer draws face `f` (nil for none) in colour.
+@(private = "file")
+is_colour :: proc(c: ^Collection, f: ^Face) -> bool {
+	return f != nil && (f.colour || (!c.outlines_only && f.bitmap_colour))
 }
 
 // `g`, or 0 where the collection's renderer draws outlines only and the
@@ -124,10 +146,6 @@ emoji_fallback :: proc(c: ^Collection, runes: []rune, face: []Face_Id) {
 	continues :: proc(r: rune) -> bool {
 		return r == 0x200D || r == 0xFE0E || r == 0xFE0F || r == 0x20E3 || (r >= 0x1F3FB && r <= 0x1F3FF) || (r >= 0xE0020 && r <= 0xE007F)
 	}
-	colour :: proc(c: ^Collection, id: Face_Id) -> bool {
-		f := collection_face(c, id)
-		return f != nil && f.colour
-	}
 	for i in 0 ..< len(runes) {
 		r := runes[i]
 		if i > 0 && runes[i - 1] != '\n' && continues(r) {
@@ -135,8 +153,8 @@ emoji_fallback :: proc(c: ^Collection, runes: []rune, face: []Face_Id) {
 			continue
 		}
 		wants := i + 1 < len(runes) && runes[i + 1] == 0xFE0F
-		wants ||= i > 0 && runes[i - 1] == 0x200D && colour(c, face[i - 1])
-		if wants && !colour(c, face[i]) {
+		wants ||= i > 0 && runes[i - 1] == 0x200D && is_colour(c, collection_face(c, face[i - 1]))
+		if wants && !is_colour(c, collection_face(c, face[i])) {
 			if f, g := collection_emoji_glyph(c, r); g != 0 {
 				face[i] = f
 			}
@@ -148,7 +166,7 @@ emoji_fallback :: proc(c: ^Collection, runes: []rune, face: []Face_Id) {
 // the cluster (base and its marks) to the first such face that has them
 // all: marks attach to their base only when shaped with it. Runes that kept
 // their neighbour's face cost one comparison.
-@(private = "file")
+@(private)
 mark_fallback :: proc(c: ^Collection, char: []rune, piece: []i32, face: []Face_Id) {
 	is_mark :: proc(r: rune) -> bool {
 		return unicode.is_nonspacing_mark(r) || unicode.is_enclosing_mark(r) || unicode.is_spacing_mark(r)
@@ -176,7 +194,10 @@ mark_fallback :: proc(c: ^Collection, char: []rune, piece: []i32, face: []Face_I
 			f := collection_face(c, id)
 			has_all := f != nil
 			for j in base ..< end {
-				if !has_all || glyph_drawable(c, f, ft.glyph_index(&f.face, char[j])) == 0 {
+				if sh.is_variation_selector(char[j]) {
+					continue
+				}
+				if !has_all || glyph_drawable(c, f, face_glyph(f, char[j])) == 0 {
 					has_all = false
 					break
 				}

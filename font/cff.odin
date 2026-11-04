@@ -166,6 +166,8 @@ dict_ints :: proc(dict: []u8, key: int, out: []int) {
 		if b.pos >= len(b.d) {
 			break
 		}
+		// Offsets and sizes: a negative one wraps past the end of any table,
+		// where reads give 0.
 		v = int(u32(operand(&b)))
 	}
 }

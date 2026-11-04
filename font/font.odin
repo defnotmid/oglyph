@@ -196,7 +196,10 @@ read_u24 :: #force_inline proc "contextless" (d: []u8, at: int) -> u32 {
 }
 
 read_u32 :: #force_inline proc "contextless" (d: []u8, at: int) -> u32 {
-	return u32(read_u16(d, at)) << 16 | u32(read_u16(d, at + 2))
+	if at < 0 || at + 4 > len(d) {
+		return 0
+	}
+	#no_bounds_check return u32(d[at]) << 24 | u32(d[at + 1]) << 16 | u32(d[at + 2]) << 8 | u32(d[at + 3])
 }
 
 // `count` records of type T at `at`; nil unless they all lie in the data.
@@ -312,13 +315,17 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 			f.loca_long = records_clamped(data[loca.at:][:loca.size], 0, f.glyph_count + 1, U32)
 		}
 	}
-	// The most preferred Unicode subtable the face has.
+	// The most preferred Unicode subtable the face has in a format read here.
 	cmap := t[.cmap].at
 	m, best := 0, len(CMAP_PREFERENCE)
 	for i in 0 ..< int(read_u16(data, cmap + 2)) {
 		rec := cmap + 4 + 8 * i
 		if k, found := slice.linear_search(CMAP_PREFERENCE[:], [2]u16{read_u16(data, rec), read_u16(data, rec + 2)}); found && k < best {
-			m, best = cmap + int(read_u32(data, rec + 4)), k
+			at := cmap + int(read_u32(data, rec + 4))
+			switch read_u16(data, at) {
+			case 0, 4, 6, 12, 13:
+				m, best = at, k
+			}
 		}
 	}
 	if m == 0 {
@@ -329,7 +336,7 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 	c.format = read_u16(data, m)
 	switch c.format {
 	case 0:
-		c.bytes = records_clamped(data, m + 6, int(read_u16(data, m + 2)) - 6, u8)
+		c.bytes = records_clamped(data, m + 6, min(int(read_u16(data, m + 2)) - 6, 256), u8)
 	case 4:
 		segs := int(read_u16(data, m + 6)) / 2
 		c.ends = records(data, m + 14, segs, U16)
@@ -354,6 +361,9 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 // The glyph for code point `r`; 0 (the missing glyph) when the face has
 // none.
 glyph_index :: proc(f: ^Face, r: rune) -> Glyph {
+	if r < 0 {
+		return 0
+	}
 	c := &f.cmap
 	cp := int(r)
 	switch c.format {

@@ -66,9 +66,11 @@ rows_append :: proc(r: ^Rows($T), v: T) -> (index: int, row: ^T) {
 			r.allocator = context.allocator
 		}
 		c = raw_data(make([]T, ROWS_FIRST << uint(k), r.allocator))
+		c[at] = v
 		sync.atomic_store_explicit(&r.chunks[k], c, .Release)
+	} else {
+		c[at] = v
 	}
-	c[at] = v
 	index, row = r.len, &c[at]
 	r.len += 1
 	return

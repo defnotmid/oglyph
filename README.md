@@ -192,7 +192,7 @@ perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odi
 
 Some shape tests read installed fonts (Adwaita Sans for variable fonts) and
 skip without them. `assets/` holds the test fonts: Bitstream Vera Sans,
-JetBrains Mono and Noto Sans Arabic Bold.
+JetBrains Mono, Noto Sans Arabic Bold and TinyCFF (a few generated glyphs).
 
 The mascot, an octopus with a quill (ink, and arms that curl like a
 script's strokes), is drawn by `tools/mascot` (`odin run tools/mascot --

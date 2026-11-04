@@ -303,7 +303,11 @@ glyf_points :: proc(f: ^Face, at, end, contours: int, o: ^Outline) -> bool {
 	clear(&o.ends)
 	ends := at + 10
 	for i in 0 ..< contours {
-		append(&o.ends, int(read_u16(d, ends + 2 * i)))
+		e := int(read_u16(d, ends + 2 * i))
+		if i > 0 && e < o.ends[i - 1] {
+			return false
+		}
+		append(&o.ends, e)
 	}
 	n := o.ends[contours - 1] + 1
 	p := ends + 2 * contours
@@ -408,10 +412,14 @@ glyf_contours :: proc(o: ^Outline) -> bool {
 			if i != 0 {
 				close(verbs, points, &v, &p, was_off, start_off, start, start_c, c)
 			}
+			for contour < len(o.ends) && o.ends[contour] < i {
+				contour += 1
+			}
+			end_pt := o.ends[contour] if contour < len(o.ends) else n - 1
 			start_off = !on
 			if start_off {
 				start_c = pt
-				k := min(i + 1, n - 1)
+				k := min(i + 1, end_pt)
 				after := [2]f32{xs[k], ys[k]}
 				if .On_Curve not_in flags[k] {
 					start = mid(pt, after)
@@ -424,7 +432,7 @@ glyf_contours :: proc(o: ^Outline) -> bool {
 			}
 			line(verbs, points, &v, &p, .Move, start)
 			was_off = false
-			next = o.ends[contour] + 1 if contour < len(o.ends) else n + 1
+			next = end_pt + 1
 			contour += 1
 		} else if !on {
 			if was_off {

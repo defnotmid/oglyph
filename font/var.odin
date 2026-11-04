@@ -136,8 +136,10 @@ avar_map :: proc(f: ^Face, coords: []f32) {
 	}
 	at := avar + 8
 	axis_count := int(read_u16(d, avar + 6))
-	axes := min(axis_count, len(coords))
-	for i in 0 ..< axes {
+	if axis_count != len(coords) {
+		return
+	}
+	for i in 0 ..< axis_count {
 		count := int(read_u16(d, at))
 		pairs := at + 2
 		at = pairs + 4 * count
@@ -171,9 +173,6 @@ avar_map :: proc(f: ^Face, coords: []f32) {
 	}
 	if version != 2 {
 		return
-	}
-	for _ in axes ..< axis_count {
-		at += 2 + 4 * int(read_u16(d, at))
 	}
 	m, store := int(read_u32(d, at)), int(read_u32(d, at + 4))
 	if store == 0 {

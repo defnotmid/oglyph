@@ -464,10 +464,10 @@ gvar_advance :: proc(f: ^Face, g: Glyph, depth := 0) -> (advance: int, ok: bool)
 	header := int(read_u16(d, at))
 	data := at + int(read_u16(d, at + 2))
 	headers_end := data
-	shared_at, shared_all := 0, false
+	shared_il, shared_ir, shared_count := -1, -1, 0
+	shared_all := true
 	if header & 0x8000 != 0 {
-		shared_at = data
-		data = skip_points(d, data, end, &shared_all)
+		data, shared_il, shared_ir, shared_count, shared_all = find_points(d, data, end, left, right)
 	}
 	// Summed in double precision: single precision lands a unit off near
 	// half-unit ties.
@@ -489,55 +489,31 @@ gvar_advance :: proc(f: ^Face, g: Glyph, depth := 0) -> (advance: int, ok: bool)
 			continue
 		}
 		// Which of the tuple's deltas are the two phantom points'.
-		points_at, all := shared_at, shared_all
+		il, ir, count, all := shared_il, shared_ir, shared_count, shared_all
 		if t.private {
-			points_at = p
-			p = skip_points(d, p, data, &all)
-		} else if header & 0x8000 == 0 {
-			all = true
+			p, il, ir, count, all = find_points(d, p, data, left, right)
 		}
-		count := n + PHANTOM_COUNT
-		il, ir := left, right
-		if !all {
-			il, ir, count = find_points(d, points_at, data, left, right)
+		if all {
+			il, ir, count = left, right, n + PHANTOM_COUNT
 		}
-		dl := delta_at(d, p, data, count, il)
-		dr := delta_at(d, p, data, count, ir)
+		dl, dr := deltas_at(d, p, data, count, il, ir)
 		delta += f64(dr - dl) * f64(scalar)
 	}
 	return int(math.clamp(math.floor(f64(adv) + delta + 0.5), 0, f64(max(i32)))), true
 }
 
-// Skips packed point numbers; `all` when they mean every point.
-@(private)
-skip_points :: proc(d: []u8, p, end: int, all: ^bool) -> int {
-	p := p
-	count := int(read_u8(d, p))
-	p += 1
-	all^ = count == 0
-	if count & 0x80 != 0 {
-		count = (count & 0x7F) << 8 | int(read_u8(d, p))
-		p += 1
-	}
-	n := 0
-	for n < count && p < end {
-		control := int(read_u8(d, p))
-		p += 1
-		run := control & 0x7F + 1
-		p += run * (2 if control & 0x80 != 0 else 1)
-		n += run
-	}
-	return p
-}
-
 // The positions of points `a` and `b` in the packed point numbers at `p`
-// (-1 when absent), and how many numbers there are.
+// (-1 when absent), how many numbers there are, whether they mean every
+// point, and where the packed numbers end.
 @(private)
-find_points :: proc(d: []u8, p, end, a, b: int) -> (ia, ib, count: int) {
+find_points :: proc(d: []u8, p, end, a, b: int) -> (next, ia, ib, count: int, all: bool) {
 	ia, ib = -1, -1
 	p := p
 	count = int(read_u8(d, p))
 	p += 1
+	if count == 0 {
+		return p, -1, -1, 0, true
+	}
 	if count & 0x80 != 0 {
 		count = (count & 0x7F) << 8 | int(read_u8(d, p))
 		p += 1
@@ -567,18 +543,31 @@ find_points :: proc(d: []u8, p, end, a, b: int) -> (ia, ib, count: int) {
 			n += 1
 		}
 	}
-	return
+	return p, ia, ib, count, false
 }
 
-// Delta `i` (-1 for none) of the x deltas at `p` (`count` of them).
+// Deltas `a` and `b` (-1 for none) of the x deltas at `p` (`count` of them).
 @(private)
-delta_at :: proc(d: []u8, p, end, count, i: int) -> f32 {
-	if i < 0 {
-		return 0
+deltas_at :: proc(d: []u8, p, end, count, a, b: int) -> (da, db: f32) {
+	if a < 0 && b < 0 {
+		return
+	}
+	read_one :: #force_inline proc(d: []u8, k, size: int) -> f32 {
+		switch size {
+		case 0:
+			return 0
+		case 2:
+			return f32(read_i16(d, k))
+		case 4:
+			return f32(i32(read_u32(d, k)))
+		case:
+			return f32(i8(read_u8(d, k)))
+		}
 	}
 	p := p
 	n := 0
-	for n < count && p < end {
+	last := max(a, b)
+	for n <= last && n < count && p < end {
 		control := int(read_u8(d, p))
 		p += 1
 		run := control & 0x3F + 1
@@ -593,23 +582,16 @@ delta_at :: proc(d: []u8, p, end, count, i: int) -> f32 {
 		case:
 			size = 1
 		}
-		if i < n + run {
-			k := p + (i - n) * size
-			switch size {
-			case 0:
-				return 0
-			case 2:
-				return f32(read_i16(d, k))
-			case 4:
-				return f32(i32(read_u32(d, k)))
-			case:
-				return f32(i8(read_u8(d, k)))
-			}
+		if a >= n && a < n + run {
+			da = read_one(d, p + (a - n) * size, size)
+		}
+		if b >= n && b < n + run {
+			db = read_one(d, p + (b - n) * size, size)
 		}
 		n += run
 		p += run * size
 	}
-	return 0
+	return
 }
 
 // The component of composite glyph `g` with USE_MY_METRICS, if any.

@@ -285,8 +285,8 @@ serial_next :: proc "contextless" () -> u32 {
 serials: u32
 
 // The collection's serial and its fallback's row (0), made with its first
-// face: collection_init's fallback, else the first face added (the
-// fallback then a zero face).
+// face: collection_init's fallback, else a copy of the first face added
+// (face_add).
 @(private = "file")
 collection_serial :: proc(c: ^Collection) {
 	if c.serial != 0 {
@@ -306,6 +306,10 @@ collection_serial :: proc(c: ^Collection) {
 face_add :: proc(c: ^Collection, face: Face, place: i32) -> ^Face {
 	collection_serial(c)
 	face := face
+	if c.fallback.file == nil {
+		c.fallback^ = face
+		c.fallback.id = {c.serial, 0}
+	}
 	face.id = {c.serial, u32(c.rows.len)}
 	_, row := rows_append(&c.rows, face)
 	append(&c.places, place)
@@ -416,6 +420,9 @@ collection_find :: proc(c: ^Collection, family: string, weight: int, italic := f
 		}
 	}
 	if best < 0 {
+		if c.fallback == nil {
+			return {}, false
+		}
 		// The fallback face answers to its own family too.
 		return c.fallback.id, family == "" || strings.equal_fold(family, c.fallback.family)
 	}

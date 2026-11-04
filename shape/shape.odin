@@ -219,8 +219,12 @@ find_candidates :: proc(s: ^Shaper, n: int) {
 	// In bounds as the plan built them: every glyph has a row, rows have
 	// `words` words, and their bits are plan lookups (below n).
 	#no_bounds_check for p in 0 ..< len(info) {
+		r := starts_row_of(st, info[p].glyph)
+		if r == 0 {
+			continue
+		}
 		bit := u64(1) << uint(p % 64)
-		for word, i in starts_row(st, starts_row_of(st, info[p].glyph)) {
+		for word, i in starts_row(st, r) {
 			s.active[i] |= word
 			for bits := word; bits != 0; bits &= bits - 1 {
 				k := 64 * i + int(intrinsics.count_trailing_zeros(bits))

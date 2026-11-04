@@ -47,6 +47,12 @@ test_collection_find_and_ids :: proc(t: ^testing.T) {
 // no face has keeps the face asked for.
 @(test)
 test_collection_fallback :: proc(t: ^testing.T) {
+	// A failed init keeps what it was given, for the faces added after it.
+	bad: Collection
+	bad_files: Files
+	testing.expect(t, !collection_init(&bad, nil, files = &bad_files, outlines_only = true))
+	testing.expect(t, bad.outlines_only && bad.files == &bad_files)
+
 	c: Collection
 	testing.expect(t, collection_init(&c, VERA))
 	defer collection_destroy(&c)
@@ -56,14 +62,48 @@ test_collection_fallback :: proc(t: ^testing.T) {
 	text := utf8.string_to_runes("aب \U0010FFFD", context.temp_allocator)
 	piece := make([]i32, len(text), context.temp_allocator)
 	faces := make([]Face_Id, len(text), context.temp_allocator)
-	for &f in faces {
-		f = mono
+	// The same picks once its faces are prepared, when fallback reads their
+	// shaping tables' cmaps.
+	for _ in 0 ..< 2 {
+		for &f in faces {
+			f = mono
+		}
+		collection_fallback(&c, text, piece, faces)
+		testing.expect(t, faces[0] == mono)
+		testing.expect(t, faces[1] == arabic)
+		testing.expect(t, faces[2] == mono)
+		testing.expect(t, faces[3] == mono)
+		for f in c.faces {
+			file_shaping(c.files, f.file, &f.face)
+		}
 	}
-	collection_fallback(&c, text, piece, faces)
-	testing.expect(t, faces[0] == mono)
-	testing.expect(t, faces[1] == arabic)
-	testing.expect(t, faces[2] == mono)
-	testing.expect(t, faces[3] == mono)
+
+	// Mark cluster with a variation selector and a combining mark from
+	// another face unifies onto the face that has both base and mark.
+	cluster := [?]rune{'a', 0xFE0E, 0x0301}
+	cluster_piece := [?]i32{0, 0, 0}
+	cluster_faces := [?]Face_Id{c.fallback.id, c.fallback.id, mono}
+	mark_fallback(&c, cluster[:], cluster_piece[:], cluster_faces[:])
+	testing.expect(t, cluster_faces[0] == mono && cluster_faces[1] == mono && cluster_faces[2] == mono)
+
+	// A collection used without collection_init falls back to its first
+	// face, which shapes like any other.
+	no_init: Collection
+	defer collection_destroy(&no_init)
+	collection_add(&no_init, MONO)
+	miss, found := collection_find(&no_init, "Missing", 400)
+	testing.expect(t, !found && miss == no_init.fallback.id)
+	fb_faces := [?]Face_Id{miss}
+	fb_piece := [?]i32{0}
+	fb_text := [?]rune{'a'}
+	collection_fallback(&no_init, fb_text[:], fb_piece[:], fb_faces[:])
+	testing.expect(t, fb_faces[0] == miss)
+	testing.expect(t, file_plan(no_init.files, collection_face(&no_init, miss), .Latin, .LTR, nil) != nil)
+
+	// With no face at all, nothing is found.
+	empty: Collection
+	none, none_found := collection_find(&empty, "Missing", 400)
+	testing.expect(t, !none_found && none == Face_Id{})
 }
 
 // Collections sharing their files share each file's row and its plans.

@@ -134,6 +134,7 @@ find_table :: proc(f: ^ft.Face, tag: string) -> (at, size: int) {
 // Prepares face `f`'s layout tables into `l`. The face's data is borrowed
 // and must outlive the layout.
 layout_init :: proc(l: ^Layout, f: ^ft.Face, allocator := context.allocator) {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = allocator == context.temp_allocator)
 	l^ = {data = f.data, allocator = allocator}
 	d := f.data
 	gsub, gsub_size := find_table(f, "GSUB")
