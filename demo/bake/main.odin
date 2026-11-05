@@ -93,21 +93,24 @@ glyph_d :: proc(font: ^vg.Font, g: vg.Glyph_Index, em: f32) -> string {
 	vg.path_init(&p, context.temp_allocator)
 	vg.font_glyph_path(font, g, 0, 0, em, &p)
 	b := strings.builder_make()
-	c := 0
-	for v in p.verbs {
-		switch v {
-		case .Move_To:
-			fmt.sbprintf(&b, "M%.2f %.2f", p.coords[c].x, p.coords[c].y)
-		case .Line_To:
-			fmt.sbprintf(&b, "L%.2f %.2f", p.coords[c].x, p.coords[c].y)
-		case .Bezier_To:
-			fmt.sbprintf(&b, "C%.2f %.2f %.2f %.2f %.2f %.2f", p.coords[c].x, p.coords[c].y, p.coords[c + 1].x,
-				p.coords[c + 1].y, p.coords[c + 2].x, p.coords[c + 2].y)
-		case .Close:
-			strings.write_string(&b, "Z")
-		case .Solid, .Hole:
+	for ct in p.contours {
+		c := int(ct.start)
+		fmt.sbprintf(&b, "M%.2f %.2f", p.pts[c].x, p.pts[c].y)
+		c += 1
+		for kind in p.kinds[ct.seg:][:ct.segs] {
+			switch kind {
+			case .Line:
+				fmt.sbprintf(&b, "L%.2f %.2f", p.pts[c].x, p.pts[c].y)
+				c += 1
+			case .Cubic:
+				fmt.sbprintf(&b, "C%.2f %.2f %.2f %.2f %.2f %.2f", p.pts[c].x, p.pts[c].y, p.pts[c + 1].x,
+					p.pts[c + 1].y, p.pts[c + 2].x, p.pts[c + 2].y)
+				c += 3
+			}
 		}
-		c += vg.verb_num_coords(v)
+		if ct.closed {
+			strings.write_string(&b, "Z")
+		}
 	}
 	return strings.to_string(b)
 }
