@@ -129,6 +129,67 @@ test_collection_shared_files :: proc(t: ^testing.T) {
 	testing.expect(t, file_plan(&files, b.faces[0], .Latin, .LTR, {{tag = sh.tag("liga")}}) != pa)
 }
 
+// Many threads find faces, fall back and plan at once through a collection
+// none changes, starting with no file's tables or plans made: each sees the
+// same picks, and each plan is made once.
+@(test)
+test_collection_readers :: proc(t: ^testing.T) {
+	c: Collection
+	testing.expect(t, collection_init(&c, VERA))
+	defer collection_destroy(&c)
+	collection_add(&c, MONO)
+	collection_add(&c, ARABIC)
+	Reader :: struct {
+		c:          ^Collection,
+		start:      ^sync.Barrier,
+		plans:      [3]^sh.Plan,
+		mismatches: int,
+	}
+	start: sync.Barrier
+	readers: [4]Reader
+	sync.barrier_init(&start, len(readers))
+	threads: [len(readers)]^thread.Thread
+	for &r, i in readers {
+		r = {c = &c, start = &start}
+		threads[i] = thread.create_and_start_with_data(&r, proc(data: rawptr) {
+			r := (^Reader)(data)
+			c := r.c
+			sync.barrier_wait(r.start)
+			for n in 0 ..< 100 {
+				mono, _ := collection_find(c, "jetbrains mono", 400)
+				arabic, _ := collection_find(c, c.faces[1].family, 700)
+				text := [4]rune{'a', 'ب', ' ', 0x10FFFD}
+				piece: [4]i32
+				faces := [4]Face_Id{mono, mono, mono, mono}
+				collection_fallback(c, text[:], piece[:], faces[:])
+				want := [4]Face_Id{mono, arabic, mono, mono}
+				if faces != want {
+					r.mismatches += 1
+				}
+				ids := [3]Face_Id{c.fallback.id, mono, arabic}
+				for id, k in ids {
+					// The first, made as the others make theirs, is the one
+					// every later call gives.
+					p := file_plan(c.files, collection_face(c, id), .Latin, .LTR, nil)
+					if n == 0 {
+						r.plans[k] = p
+					} else if p != r.plans[k] {
+						r.mismatches += 1
+					}
+				}
+			}
+		})
+	}
+	for th in threads {
+		thread.join(th)
+		thread.destroy(th)
+	}
+	for r in readers {
+		testing.expect_value(t, r.mismatches, 0)
+		testing.expect(t, r.plans == readers[0].plans && r.plans[0] != nil && r.plans[1] != r.plans[2])
+	}
+}
+
 // Rows never move: a row's place holds across chunk after chunk of rows
 // added, and a row past every chunk is nil.
 @(test)

@@ -33,11 +33,14 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   font matching, through an index by family), each a `Face_Id` that stays
   with its face, and each face in a row that never moves (`Rows`: chunks
   of doubling size behind a fixed table), so other threads may read faces
-  they hold the ids of while faces are added; per-character fallback (`collection_fallback`: the first
+  they hold the ids of while faces are added, and many threads may find
+  faces and fall back at once while none changes the collection;
+  per-character fallback (`collection_fallback`: the first
   face with a glyph, emoji sequences kept in one colour face, combining
   marks with their base); and the files the faces are instances of
   (`Files`, shared between collections, on any thread: each file's
-  shaping tables and plans made once, `file_plan`). A renderer that draws
+  shaping tables and plans made once, `file_plan`; a file is known by its
+  bytes' address, so they must outlive the `Files`). A renderer that draws
   outlines only says so (`outlines_only`), and a glyph a face has only as
   a bitmap then counts as missing.
 

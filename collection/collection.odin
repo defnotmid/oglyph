@@ -14,7 +14,9 @@ import sh "../shape"
 // A set of font faces found by family, weight and style (CSS font
 // matching), with per-glyph fallback through every face (fallback.odin),
 // their files' shaping tables and plans shared (files.odin). Face data is
-// borrowed and must outlive the collection.
+// borrowed and must outlive the collection and its files' table (Files).
+// Many threads may find faces and fall back through a collection at once
+// while none changes it (adds or removes a face, or sets the emoji face).
 
 // A face of a Collection, for as long as the collection holds it: the
 // collection that made it and the face's row in its `rows`. Faces added

@@ -1,5 +1,6 @@
 package shape
 
+import "base:intrinsics"
 import "core:math"
 import ft "../font"
 
@@ -48,11 +49,7 @@ gpos_apply :: proc(c: ^Apply_Context, type: u8, sub: ^Subtable, covered: int) ->
 // The bytes of a value record of `format`.
 @(private)
 value_size :: #force_inline proc "contextless" (format: u16) -> int {
-	n := 0
-	for f := format & 0xFF; f != 0; f >>= 1 {
-		n += int(f & 1)
-	}
-	return 2 * n
+	return 2 * int(intrinsics.count_ones(format & 0xFF))
 }
 
 // Adds the value record at `v` (device offsets from `base`) to glyph `i`'s

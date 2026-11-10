@@ -258,9 +258,13 @@ slice_zero :: #force_inline proc "contextless" (v: []u64) {
 
 // Marks grapheme continuations: marks (set by init_unicode), emoji
 // modifiers, the second of a regional indicator pair, ZWJ and the
-// pictograph after it, tags and halfwidth kana sound marks.
+// pictograph after it, tags and halfwidth kana sound marks: none of them
+// ASCII.
 @(private)
 set_continuations :: proc(s: ^Shaper) {
+	if .Has_Non_ASCII not_in s.flags {
+		return
+	}
 	info := s.info[:s.len]
 	for i := 0; i < len(info); i += 1 {
 		r := info[i].char

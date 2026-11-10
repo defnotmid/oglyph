@@ -12,7 +12,9 @@ import sh "../shape"
 // collections that share the table (collection_init's `files`), on any
 // thread. Rows are made one at a time and never move: faces keep theirs as
 // other threads add files, and only making a row, its layout tables or a
-// plan takes the lock. The data is borrowed; the table must outlive the
+// plan takes the lock. The data is borrowed and must outlive the table (a
+// file is known by its bytes' address and length, so other bytes later at
+// the same place would be taken for it), and the table must outlive the
 // collections that share it.
 Files :: struct {
 	lock:      sync.Mutex,

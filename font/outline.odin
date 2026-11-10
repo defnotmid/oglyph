@@ -221,37 +221,40 @@ glyf_outline :: proc(f: ^Face, g: Glyph, o: ^Outline, depth, first: int) -> (ok:
 		flags := transmute(Component_Flags)read_u16(d, c)
 		child := Glyph(read_u16(d, c + 2))
 		c += 4
-		m := [6]f32{1, 0, 0, 1, 0, 0}
+		// The component's transform: its points go to m * p + offset.
+		m := matrix[2, 2]f32{1, 0, 0, 1}
+		offset: [2]f32
 		if .Args_Are_Words in flags {
 			if .Args_Are_XY in flags {
-				m[4], m[5] = f32(read_i16(d, c)), f32(read_i16(d, c + 2))
+				offset = {f32(read_i16(d, c)), f32(read_i16(d, c + 2))}
 			}
 			c += 4
 		} else {
 			if .Args_Are_XY in flags {
-				m[4], m[5] = f32(i8(read_u8(d, c))), f32(i8(read_u8(d, c + 1)))
+				offset = {f32(i8(read_u8(d, c))), f32(i8(read_u8(d, c + 1)))}
 			}
 			c += 2
 		}
 		if component < count && .Args_Are_XY in flags {
-			m[4] += o.deltas[first + component].x
-			m[5] += o.deltas[first + component].y
+			offset += o.deltas[first + component]
 		}
 		if .Scale in flags {
-			m[0] = f2dot14(d, c)
-			m[3] = m[0]
+			s := f2dot14(d, c)
+			m = {s, 0, 0, s}
 			c += 2
 		} else if .XY_Scale in flags {
-			m[0], m[3] = f2dot14(d, c), f2dot14(d, c + 2)
+			m = {f2dot14(d, c), 0, 0, f2dot14(d, c + 2)}
 			c += 4
 		} else if .Two_By_Two in flags {
-			m[0], m[1], m[2], m[3] = f2dot14(d, c), f2dot14(d, c + 2), f2dot14(d, c + 4), f2dot14(d, c + 6)
+			// Stored xscale, scale01, scale10, yscale: x' = xscale x +
+			// scale10 y, y' = scale01 x + yscale y.
+			m = {f2dot14(d, c), f2dot14(d, c + 4), f2dot14(d, c + 2), f2dot14(d, c + 6)}
 			c += 8
 		}
 		// The offset is in the parent's units unless the font asks for it
 		// to be transformed too (Apple's convention).
 		if .Scaled_Component_Offset in flags && .Unscaled_Component_Offset not_in flags {
-			m[4], m[5] = m[0] * m[4] + m[2] * m[5], m[1] * m[4] + m[3] * m[5]
+			offset = m * offset
 		}
 		first_point := len(o.points)
 		child_ok, child_left := glyf_outline(f, child, o, depth + 1, child_first)
@@ -262,7 +265,7 @@ glyf_outline :: proc(f: ^Face, g: Glyph, o: ^Outline, depth, first: int) -> (ok:
 			left = child_left
 		}
 		for &p in o.points[first_point:] {
-			p = {m[0] * p.x + m[2] * p.y + m[4], m[1] * p.x + m[3] * p.y + m[5]}
+			p = m * p + offset
 		}
 		if .More not_in flags {
 			return true, left
