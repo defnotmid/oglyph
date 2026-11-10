@@ -44,6 +44,10 @@ Shaper :: struct {
 	scratch_cats:      [dynamic]u8,
 	scratch_index:     [dynamic]i32,
 	scratch_syllables: [dynamic]u8,
+	// The region scalars of HVAR's and GDEF's variation stores at the face's
+	// instance, worked out once a call for every advance and device delta.
+	hvar_scalars:      [dynamic]f32,
+	gdef_scalars:      [dynamic]f32,
 	// The layout of the face being shaped (its cmap table).
 	layout:            ^Layout,
 	// Indic: the font's virama glyph for the script (0 for none).
@@ -83,6 +87,8 @@ shaper_init :: proc(s: ^Shaper, allocator := context.allocator) {
 	s.scratch_syllables = make([dynamic]u8, allocator)
 	s.cand = make([dynamic]u64, allocator)
 	s.active = make([dynamic]u64, allocator)
+	s.hvar_scalars = make([dynamic]f32, allocator)
+	s.gdef_scalars = make([dynamic]f32, allocator)
 }
 
 shaper_destroy :: proc(s: ^Shaper) {
@@ -94,6 +100,8 @@ shaper_destroy :: proc(s: ^Shaper) {
 	delete(s.scratch_syllables)
 	delete(s.cand)
 	delete(s.active)
+	delete(s.hvar_scalars)
+	delete(s.gdef_scalars)
 	s^ = {}
 }
 
@@ -420,8 +428,13 @@ position :: proc(c: ^Apply_Context, f: ^ft.Face) {
 	s := c.s
 	plan := c.plan
 	s.have_output = false
+	advances := ft.advances_init(f, &s.hvar_scalars)
+	clear(&s.gdef_scalars)
+	if advances.varied {
+		ft.region_scalars(c.d, c.layout.var_store, f.coords[:f.axis_count], &s.gdef_scalars)
+	}
 	for i in 0 ..< s.len {
-		s.pos[i] = {x_advance = i32(ft.advance(f, ft.Glyph(s.info[i].glyph)))}
+		s.pos[i] = {x_advance = i32(ft.advance_at(f, &advances, ft.Glyph(s.info[i].glyph)))}
 	}
 	if .Has_Space_Fallback in s.flags {
 		adjust_spaces(s, f)

@@ -1,7 +1,6 @@
 package shape
 
 import "base:intrinsics"
-import "core:math"
 import ft "../font"
 
 // GPOS: glyph positioning lookups, in place over the positions. Marks and
@@ -109,8 +108,8 @@ device_delta :: proc(c: ^Apply_Context, at: int) -> i32 {
 	if at == 0 || ft.read_u16(d, at + 4) != 0x8000 {
 		return 0
 	}
-	delta := ft.item_variation_delta(d, c.layout.var_store, int(ft.read_u16(d, at)), int(ft.read_u16(d, at + 2)), c.face.coords[:c.face.axis_count])
-	return i32(math.floor(delta + 0.5))
+	delta := ft.item_variation_delta(d, c.layout.var_store, int(ft.read_u16(d, at)), int(ft.read_u16(d, at + 2)), c.s.gdef_scalars[:])
+	return i32(ft.round_delta(delta))
 }
 
 // An anchor's point (font units, with variation deltas).

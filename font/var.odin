@@ -183,8 +183,9 @@ avar_map :: proc(f: ^Face, coords: []f32) {
 	for v, i in coords {
 		mapped[i] = i16(math.round(v * 16384))
 	}
+	axis_map := delta_set_map(d, avar + m if m != 0 else 0)
 	for &v, i in coords {
-		outer, inner := delta_set_index(d, avar + m if m != 0 else 0, i)
+		outer, inner := delta_set_index(d, &axis_map, i)
 		delta := item_variation_delta(d, avar + store, outer, inner, mapped[:len(coords)])
 		c := v * 65536 + math.round(clamp(delta * 4, -131072, 131072))
 		v = clamp(c, -65536, 65536) / 65536
@@ -204,14 +205,27 @@ has_variation :: proc(f: ^Face) -> bool {
 // ---- ItemVariationStore -------------------------------------------------------------
 
 // The delta of item (outer, inner) of the ItemVariationStore at `store`
-// for normalized coordinates `coords`: the sum of each region's delta
-// scaled by how far the coordinates lie within the region.
-item_variation_delta :: proc(d: []u8, store: int, outer, inner: int, coords: []i16) -> f32 {
+// at an instance: the sum of each region's delta scaled by how far the
+// instance lies within the region. `instance` is its normalized
+// coordinates, or each region's scalar there (region_scalars), worked out
+// once for many items.
+item_variation_delta :: proc(d: []u8, store: int, outer, inner: int, instance: $T) -> f32 where T == []i16 || T == []f32 {
 	if store == 0 || read_u16(d, store) != 1 || outer >= int(read_u16(d, store + 6)) {
 		return 0
 	}
 	regions := store + int(read_u32(d, store + 2))
-	axes, list_count, ok := region_list(d, regions, coords)
+	list_count := int(read_u16(d, regions + 2))
+	when T == []i16 {
+		axes, _, ok := region_list(d, regions, instance)
+		if !ok {
+			return 0
+		}
+	} else {
+		// Scalars of another store's regions are none of this one's.
+		if len(instance) != list_count {
+			return 0
+		}
+	}
 	data := store + int(read_u32(d, store + 8 + 4 * outer))
 	item_count := int(read_u16(d, data))
 	word_count := int(read_u16(d, data + 2))
@@ -220,26 +234,57 @@ item_variation_delta :: proc(d: []u8, store: int, outer, inner: int, coords: []i
 	region_count := int(read_u16(d, data + 4))
 	size: int = 2 if long_words else 1
 	row_size := (2 * word_count + region_count - word_count) * size
-	if !ok || inner >= item_count || word_count > region_count || data + 6 + 2 * region_count + item_count * row_size > len(d) {
+	if inner >= item_count || word_count > region_count || data + 6 + 2 * region_count + item_count * row_size > len(d) {
 		return 0
 	}
 	row := data + 6 + 2 * region_count + inner * row_size
 	delta: f32
 	for k in 0 ..< region_count {
 		region := int(read_u16(d, data + 6 + 2 * k))
+		if region >= list_count {
+			continue
+		}
+		scalar: f32
+		when T == []i16 {
+			scalar = region_scalar(d, regions + 4 + region * axes * 6, axes, instance)
+		} else {
+			scalar = instance[region]
+		}
+		if scalar == 0 {
+			continue
+		}
+		// The row's word columns (two bytes each, four when long), then
+		// the rest (one byte each, two when long).
 		v: i32
 		if k < word_count {
-			v = i32(read_u32(d, row)) if long_words else i32(read_i16(d, row))
-			row += 2 * size
+			at := row + 2 * size * k
+			v = i32(read_u32(d, at)) if long_words else i32(read_i16(d, at))
 		} else {
-			v = i32(read_i16(d, row)) if long_words else i32(i8(read_u8(d, row)))
-			row += size
+			at := row + size * (word_count + k)
+			v = i32(read_i16(d, at)) if long_words else i32(i8(read_u8(d, at)))
 		}
-		if region < list_count && v != 0 {
-			delta += f32(v) * region_scalar(d, regions + 4 + region * axes * 6, axes, coords)
-		}
+		delta += f32(v) * scalar
 	}
 	return delta
+}
+
+// The scalar (region_scalar) of each region of the ItemVariationStore at
+// `store` at the coordinates, into `out`, for reading many of its items
+// at one instance: none when it has none to give.
+region_scalars :: proc(d: []u8, store: int, coords: []i16, out: ^[dynamic]f32) {
+	clear(out)
+	if store == 0 || read_u16(d, store) != 1 {
+		return
+	}
+	regions := store + int(read_u32(d, store + 2))
+	axes, count, ok := region_list(d, regions, coords)
+	if !ok {
+		return
+	}
+	resize(out, count)
+	for &scalar, r in out {
+		scalar = region_scalar(d, regions + 4 + r * axes * 6, axes, coords)
+	}
 }
 
 // The VariationRegionList at `at`: its axis count and regions, ok when it
@@ -281,48 +326,98 @@ region_scalar :: proc(d: []u8, at, axes: int, coords: []i16) -> f32 {
 	return scalar
 }
 
-// The (outer, inner) item a DeltaSetIndexMap gives entry `i` (the last
-// entry for those past it; the identity without a map).
+// A DeltaSetIndexMap, its header read (count 0: none, the identity).
 @(private)
-delta_set_index :: proc(d: []u8, m: int, i: int) -> (outer, inner: int) {
+Delta_Set_Map :: struct {
+	data, count, entry_size: int,
+	inner_bits:              uint,
+}
+
+// The DeltaSetIndexMap at `m` (0 for none).
+@(private)
+delta_set_map :: proc(d: []u8, m: int) -> (dsm: Delta_Set_Map) {
 	if m == 0 {
-		return 0, i
+		return
 	}
-	format := read_u8(d, m)
 	entry_format := int(read_u8(d, m + 1))
-	count, data: int
-	if format == 0 {
-		count, data = int(read_u16(d, m + 2)), m + 4
+	if read_u8(d, m) == 0 {
+		dsm.count, dsm.data = int(read_u16(d, m + 2)), m + 4
 	} else {
-		count, data = int(read_u32(d, m + 2)), m + 6
+		dsm.count, dsm.data = int(read_u32(d, m + 2)), m + 6
 	}
-	if count == 0 {
+	dsm.entry_size = (entry_format >> 4 & 3) + 1
+	dsm.inner_bits = uint(entry_format & 0xF) + 1
+	return
+}
+
+// The (outer, inner) item the map gives entry `i` (the last entry for
+// those past it; the identity without a map).
+@(private)
+delta_set_index :: proc(d: []u8, dsm: ^Delta_Set_Map, i: int) -> (outer, inner: int) {
+	if dsm.count == 0 {
 		return 0, i
 	}
-	e := min(i, count - 1)
-	size := (entry_format >> 4 & 3) + 1
-	inner_bits := uint(entry_format & 0xF) + 1
+	e := min(i, dsm.count - 1)
 	entry: u32
-	for k in 0 ..< size {
-		entry = entry << 8 | u32(read_u8(d, data + e * size + k))
+	for k in 0 ..< dsm.entry_size {
+		entry = entry << 8 | u32(read_u8(d, dsm.data + e * dsm.entry_size + k))
 	}
-	return int(entry >> inner_bits), int(entry & (1 << inner_bits - 1))
+	return int(entry >> dsm.inner_bits), int(entry & (1 << dsm.inner_bits - 1))
+}
+
+// floor(x + 0.5) as an int, as HarfBuzz rounds deltas: for the finite
+// values deltas are, without math.floor's modf.
+round_delta :: #force_inline proc "contextless" (x: f32) -> int {
+	y := x + 0.5
+	i := int(y)
+	return i - 1 if f32(i) > y else i
+}
+
+// What reading glyphs' advances at a face's instance takes, read once:
+// whether it varies, HVAR's store and map, and its regions' scalars.
+Advances :: struct {
+	varied:      bool,
+	store:       int, // 0 without HVAR
+	advance_map: Delta_Set_Map,
+	// nil: worked out per glyph from the coordinates.
+	scalars:     []f32,
+}
+
+// Reads `f`'s HVAR for advance_at, its regions' scalars into `scalars`
+// when given (for many glyphs).
+advances_init :: proc(f: ^Face, scalars: ^[dynamic]f32 = nil) -> (a: Advances) {
+	if scalars != nil {
+		clear(scalars)
+	}
+	a.varied = has_variation(f)
+	d := f.data
+	hvar := f.tables[.HVAR].at
+	if !a.varied || hvar == 0 || read_u16(d, hvar) != 1 {
+		return
+	}
+	a.store = hvar + int(read_u32(d, hvar + 4))
+	if m := int(read_u32(d, hvar + 8)); m != 0 {
+		a.advance_map = delta_set_map(d, hvar + m)
+	}
+	if scalars != nil {
+		region_scalars(d, a.store, f.coords[:f.axis_count], scalars)
+		a.scalars = scalars[:]
+	}
+	return
 }
 
 // The glyph's advance width at the face's instance (font units, rounded):
 // hmtx's, plus HVAR's delta, else the phantom points gvar moves.
-advance :: proc(f: ^Face, g: Glyph) -> int {
+advance_at :: proc(f: ^Face, a: ^Advances, g: Glyph) -> int {
 	adv, _ := h_metrics(f, g)
-	if !has_variation(f) {
+	if !a.varied {
 		return adv
 	}
-	d := f.data
-	coords := f.coords[:f.axis_count]
-	if hvar := f.tables[.HVAR].at; hvar != 0 && read_u16(d, hvar) == 1 {
-		store := hvar + int(read_u32(d, hvar + 4))
-		m := int(read_u32(d, hvar + 8))
-		outer, inner := delta_set_index(d, hvar + m if m != 0 else 0, int(g))
-		return max(adv + int(math.floor(item_variation_delta(d, store, outer, inner, coords) + 0.5)), 0)
+	if a.store != 0 {
+		d := f.data
+		outer, inner := delta_set_index(d, &a.advance_map, int(g))
+		delta := item_variation_delta(d, a.store, outer, inner, a.scalars) if a.scalars != nil else item_variation_delta(d, a.store, outer, inner, f.coords[:f.axis_count])
+		return max(adv + round_delta(delta), 0)
 	}
 	if f.tables[.gvar].at != 0 && f.tables[.glyf].at != 0 {
 		if v, ok := gvar_advance(f, g); ok {
@@ -330,4 +425,10 @@ advance :: proc(f: ^Face, g: Glyph) -> int {
 		}
 	}
 	return adv
+}
+
+// advance_at for one glyph.
+advance :: proc(f: ^Face, g: Glyph) -> int {
+	a := advances_init(f)
+	return advance_at(f, &a, g)
 }
