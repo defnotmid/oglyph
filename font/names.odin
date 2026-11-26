@@ -118,20 +118,12 @@ cff_glyph_names :: proc(c: ^Cff, out: []string) {
 		return string(index_get(c.strings, sid - len(CFF_STRINGS)))
 	}
 	out[0] = ".notdef"
-	switch c.charset {
-	case 0:
-		// ISOAdobe: glyph g is SID g.
-		copy(out[1:], CFF_STRINGS[1:229])
-	case 1, 2:
-	// The Expert sets, for expert fonts only: not named here.
-	case:
-		it := charset_init(c)
-		for g, sid in charset_next(&it) {
-			if g >= len(out) {
-				break
-			}
-			out[g] = name(c, sid)
+	it := charset_init(c)
+	for g, sid in charset_next(&it) {
+		if g >= len(out) {
+			break
 		}
+		out[g] = name(c, sid)
 	}
 }
 

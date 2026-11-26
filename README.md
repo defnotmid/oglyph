@@ -24,8 +24,9 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   embedded fonts: a bare CFF font program (`load_cff`), a TrueType subset
   with no Unicode cmap (`load`'s `need_cmap`), other cmap subtables
   (`cmap_subtable`: symbolic, Mac Roman), a CID-keyed CFF's CIDs
-  (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), and CFF's seac
-  accented glyphs.
+  (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), a CFF font's
+  built-in Encoding (`cff_encoding`: Standard, Expert or its own, with
+  supplements), and CFF's seac accented glyphs.
 - **`shape`**: OpenType shaping: Unicode properties, script runs, bidi
   levels, line break opportunities (UAX #14) and normalization from the
   Unicode 17.0.0 character database, HarfBuzz's

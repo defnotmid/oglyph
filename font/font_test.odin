@@ -19,7 +19,8 @@ tiny_cff := #load("../assets/TinyCFF.otf")
 tiny_cid := #load("../assets/TinyCID.otf")
 
 // Generated (fontTools): A, acute, and Aacute as a seac of them with the
-// accent at (150, 50).
+// accent at (150, 50), its own Encoding giving them codes 0x41, 0xAB and
+// 0xC1.
 @(private = "file")
 tiny_seac := #load("../assets/TinySeac.otf")
 
@@ -53,6 +54,8 @@ read_all :: proc(f: ^Face, o: ^Outline) {
 	cids := make([]u16, len(names))
 	defer delete(cids)
 	glyph_cids(f, cids)
+	codes: [256]Glyph
+	cff_encoding(f, codes[:])
 	for g in 0 ..< len(names) do glyph_matrix(f, Glyph(g))
 	for pe in ([?][2]u16{{3, 0}, {1, 0}, {3, 1}}) {
 		if c, ok := cmap_subtable(f, pe[0], pe[1]); ok {
@@ -396,4 +399,48 @@ test_no_unicode_cmap :: proc(t: ^testing.T) {
 		testing.expect_value(t, glyph_outline(&f, Glyph(g), &b), glyph_outline(&want, Glyph(g), &a))
 		testing.expect(t, slice.equal(a.points[:], b.points[:]))
 	}
+}
+
+// A CFF font's built-in Encoding: Standard (TinyCFF), its own (TinySeac),
+// none in a CID-keyed or TrueType font; ranges of codes with supplements,
+// and Expert, over a custom charset.
+@(test)
+test_cff_encoding :: proc(t: ^testing.T) {
+	codes: [256]Glyph
+	want: [256]Glyph
+	f, _ := load(tiny_cff) // .notdef, B, A, space
+	testing.expect(t, cff_encoding(&f, codes[:]))
+	want[' '], want['A'], want['B'] = 3, 2, 1
+	testing.expect_value(t, codes, want)
+	f, _ = load_cff(cff_table(tiny_seac))
+	testing.expect(t, cff_encoding(&f, codes[:]))
+	want = {}
+	want[0x41], want[0xab], want[0xc1] = 1, 2, 3
+	testing.expect_value(t, codes, want)
+	for font in ([?][]u8{tiny_cid, vera}) {
+		f, _ = load(font)
+		testing.expect(t, !cff_encoding(&f, codes[:]))
+		testing.expect_value(t, codes, [256]Glyph{})
+	}
+
+	// Three pad bytes; a charset at 3 naming glyphs 1 to 3 A (SID 34),
+	// exclamsmall (229) and space (1); an Encoding at 10 giving them codes
+	// 0x61 to 0x63 in a range, then supplements: 0x41 for A, 0x20 for space.
+	bytes := [?]u8{0, 0, 0, 0, 0, 34, 0, 229, 0, 1, 0x81, 1, 0x61, 2, 2, 0x41, 0, 34, 0x20, 0, 1}
+	count := [2]u8{0, 4}
+	g := Face{cff = {table = bytes[:], charstrings = count[:], charset = 3, encoding = 10}}
+	testing.expect(t, cff_encoding(&g, codes[:]))
+	want = {}
+	want[0x61], want[0x62], want[0x63], want[0x41], want[0x20] = 1, 2, 3, 1, 3
+	testing.expect_value(t, codes, want)
+	// Expert Encoding: space is 0x20, exclamsmall 0x21; A has no code.
+	g.cff.encoding = 1
+	testing.expect(t, cff_encoding(&g, codes[:]))
+	want = {}
+	want[0x20], want[0x21] = 3, 2
+	testing.expect_value(t, codes, want)
+	// A short `out` takes the codes below its length.
+	short: [0x21]Glyph
+	testing.expect(t, cff_encoding(&g, short[:]))
+	testing.expect_value(t, short[0x20], 3)
 }

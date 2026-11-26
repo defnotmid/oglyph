@@ -26,6 +26,9 @@ Cff :: struct {
 	// and 2 name the predefined ones): glyph names (names.odin).
 	strings:     []u8,
 	charset:     int,
+	// Where the Encoding lies (0 and 1 name Standard and Expert):
+	// `cff_encoding`.
+	encoding:    int,
 	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`).
 	font_matrix: matrix[2, 3]f32,
 	// CFF2: INDEX counts are 32-bit; blends read the variation store at
@@ -252,10 +255,12 @@ cff_load :: proc(f: ^Face, table: []u8) -> Error {
 	c.strings = index_at(&b)
 	c.gsubrs = index_at(&b)
 	kind := [1]int{2}
-	charstrings, fdarray, fdselect, charset: [1]int
+	charstrings, fdarray, fdselect, charset, encoding: [1]int
 	dict_ints(top, 17, charstrings[:])
 	dict_ints(top, 15, charset[:])
+	dict_ints(top, 16, encoding[:])
 	c.charset = charset[0]
+	c.encoding = encoding[0]
 	ok: bool
 	if c.font_matrix, ok = font_matrix(top); !ok {
 		c.font_matrix = {0.001, 0, 0, 0, 0.001, 0}
@@ -379,9 +384,11 @@ glyph_fd :: proc(c: ^Cff, g: Glyph) -> int {
 	return fd
 }
 
-// A custom charset's glyphs from 1 on, each with its SID (its CID in a
-// CID-keyed font): a SID each (format 0), or ranges of consecutive SIDs
-// with an 8-bit (1) or 16-bit (2) count after the first.
+// A charset's glyphs from 1 on, each with its SID (its CID in a CID-keyed
+// font): ISOAdobe's (charset 0) are SIDs 1 to 228 in order, and a custom
+// one gives a SID each (format 0), or ranges of consecutive SIDs with an
+// 8-bit (1) or 16-bit (2) count after the first. The Expert sets (1 and
+// 2), for expert fonts only, are not read.
 @(private)
 Charset :: struct {
 	b:                   Buf,
@@ -390,16 +397,30 @@ Charset :: struct {
 
 @(private)
 charset_init :: proc(c: ^Cff) -> (it: Charset) {
-	it.b = {c.table, 0}
-	seek(&it.b, c.charset)
-	it.format = get8(&it.b)
 	it.g = 1
+	switch c.charset {
+	case 0:
+		it.format = -1
+	case 1, 2:
+		it.format = 3
+	case:
+		it.b = {c.table, 0}
+		seek(&it.b, c.charset)
+		it.format = get8(&it.b)
+	}
 	return
 }
 
 // The next glyph and its id; false past the charset's end.
 @(private)
 charset_next :: proc(it: ^Charset) -> (g, id: int, ok: bool) {
+	if it.format < 0 {
+		if it.g >= 229 {
+			return
+		}
+		it.g += 1
+		return it.g - 1, it.g - 1, true
+	}
 	if it.left == 0 {
 		if it.format > 2 || it.b.pos >= len(it.b.d) {
 			return
@@ -437,42 +458,137 @@ glyph_cids :: proc(f: ^Face, out: []u16) -> bool {
 @(private)
 standard_glyph :: proc(c: ^Cff, code: f64) -> Glyph {
 	k := int(code)
-	if f64(k) != code {
+	sid := encoding_sid(STANDARD_ENCODING[:], k) if f64(k) == code else 0
+	if sid == 0 {
 		return 0
-	}
-	sid := 0
-	for r in STANDARD_ENCODING {
-		if k >= int(r.first) && k <= int(r.last) {
-			sid = int(r.sid) + k - int(r.first)
-		}
 	}
 	count := index_count(c.charstrings)
-	switch c.charset {
-	case 0:
-		// ISOAdobe: glyph g is SID g.
-		return Glyph(sid) if sid > 0 && sid < min(229, count) else 0
-	case 1, 2:
-		return 0
-	}
 	it := charset_init(c)
 	for g, id in charset_next(&it) {
 		if g >= count {
 			break
 		}
-		if id == sid && sid > 0 {
+		if id == sid {
 			return Glyph(g)
 		}
 	}
 	return 0
 }
 
-// Standard Encoding's runs of codes, first ..= last, and the SID of the
-// first: the names seac's codes stand for.
-@(private, rodata)
-STANDARD_ENCODING := [?]struct {
+// Sets `out[code]` to the glyph of each code below len(out) (256 at most)
+// in a CFF font's built-in Encoding: Standard, Expert, or its own (glyphs
+// in order given a code each or ranges of codes, then supplements: more
+// codes, each naming its glyph by SID). PDF's Type1C simple fonts encode
+// with it when they give no /Encoding, or no /BaseEncoding under
+// /Differences in a symbolic font. 0 for a code it doesn't encode, and a
+// glyph of the Expert charsets isn't found. False (and `out` all 0) for a
+// face that has none: TrueType, CFF2 or CID-keyed.
+cff_encoding :: proc(f: ^Face, out: []Glyph) -> bool {
+	slice.zero(out)
+	c := &f.cff
+	if c.table == nil || c.cff2 || c.fontdicts != nil {
+		return false
+	}
+	codes := out[:min(len(out), 256)]
+	count := index_count(c.charstrings)
+	// The codes named by SID: (SID, code), found in the charset after.
+	named: [512][2]u16
+	n := 0
+	if c.encoding < 2 {
+		for code in 0 ..< len(codes) {
+			if sid := encoding_sid(STANDARD_ENCODING[:] if c.encoding == 0 else EXPERT_ENCODING[:], code); sid != 0 {
+				named[n] = {u16(sid), u16(code)}
+				n += 1
+			}
+		}
+	} else {
+		b := Buf{c.table, 0}
+		seek(&b, c.encoding)
+		format := get8(&b)
+		g := 1
+		switch format & 0x7f {
+		case 0:
+			n_codes := get8(&b)
+			for _ in 0 ..< n_codes {
+				if code := get8(&b); code < len(codes) && g < count {
+					codes[code] = Glyph(g)
+				}
+				g += 1
+			}
+		case 1:
+			n_ranges := get8(&b)
+			for _ in 0 ..< n_ranges {
+				first, left := get8(&b), get8(&b)
+				for code in first ..= first + left {
+					if code < len(codes) && g < count {
+						codes[code] = Glyph(g)
+					}
+					g += 1
+				}
+			}
+		case:
+			return false
+		}
+		if format & 0x80 != 0 {
+			n_sups := get8(&b)
+			for _ in 0 ..< n_sups {
+				code, sid := get8(&b), get(&b, 2)
+				if code < len(codes) {
+					named[n] = {u16(sid), u16(code)}
+					n += 1
+				}
+			}
+		}
+	}
+	// Each glyph's SID gives it the codes naming it, in one charset pass.
+	slice.sort_by(named[:n], proc(a, b: [2]u16) -> bool {return a[0] < b[0]})
+	it := charset_init(c)
+	for g, sid in charset_next(&it) {
+		if g >= count {
+			break
+		}
+		// The first named at or after sid.
+		lo, hi := 0, n
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if int(named[mid][0]) < sid {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		for k := lo; k < n && int(named[k][0]) == sid; k += 1 {
+			codes[named[k][1]] = Glyph(g)
+		}
+	}
+	return true
+}
+
+// An encoding's runs of codes, first ..= last, and the SID of the first.
+@(private)
+Encoding_Run :: struct {
 	first, last: u8,
 	sid:         u16,
-}{{32, 126, 1}, {161, 175, 96}, {177, 180, 111}, {182, 189, 115}, {191, 191, 123}, {193, 200, 124}, {202, 203, 132}, {205, 208, 134}, {225, 225, 138}, {227, 227, 139}, {232, 235, 140}, {241, 241, 144}, {245, 245, 145}, {248, 251, 146}}
+}
+
+// The SID a predefined encoding gives `code`; 0 (.notdef) for none.
+@(private)
+encoding_sid :: proc(runs: []Encoding_Run, code: int) -> int {
+	for r in runs {
+		if code >= int(r.first) && code <= int(r.last) {
+			return int(r.sid) + code - int(r.first)
+		}
+	}
+	return 0
+}
+
+// Standard Encoding (also the codes seac's operands are).
+@(private, rodata)
+STANDARD_ENCODING := [?]Encoding_Run{{32, 126, 1}, {161, 175, 96}, {177, 180, 111}, {182, 189, 115}, {191, 191, 123}, {193, 200, 124}, {202, 203, 132}, {205, 208, 134}, {225, 225, 138}, {227, 227, 139}, {232, 235, 140}, {241, 241, 144}, {245, 245, 145}, {248, 251, 146}}
+
+// Expert Encoding.
+@(private, rodata)
+EXPERT_ENCODING := [?]Encoding_Run{{32, 32, 1}, {33, 34, 229}, {36, 43, 231}, {44, 46, 13}, {47, 47, 99}, {48, 57, 239}, {58, 59, 27}, {60, 63, 249}, {65, 69, 253}, {73, 73, 258}, {76, 79, 259}, {82, 84, 263}, {86, 86, 266}, {87, 88, 109}, {89, 91, 267}, {93, 126, 270}, {161, 163, 304}, {166, 170, 307}, {172, 172, 312}, {175, 175, 313}, {178, 179, 314}, {182, 184, 316}, {188, 188, 158}, {189, 189, 155}, {190, 190, 163}, {191, 197, 319}, {200, 200, 326}, {201, 201, 150}, {202, 202, 164}, {203, 203, 169}, {204, 255, 327}}
 
 @(private)
 subr :: proc(index: []u8, n: int, wide := false) -> []u8 {
