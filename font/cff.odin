@@ -29,6 +29,9 @@ Cff :: struct {
 	// Where the Encoding lies (0 and 1 name Standard and Expert):
 	// `builtin_encoding`.
 	encoding:    int,
+	// The top dict's private dict (CID-keyed fonts' are their font
+	// dicts'): its widths (`h_metrics` without hmtx).
+	private:     []u8,
 	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`).
 	font_matrix: matrix[2, 3]f32,
 	// CFF2: INDEX counts are 32-bit; blends read the variation store at
@@ -217,16 +220,25 @@ dict_ints :: proc(dict: []u8, key: int, out: []int) {
 	}
 }
 
-// The local subroutines of a font dict's private dict, and (CFF2) its
-// default variation store data index.
+// A top or font dict's private dict, and where it starts in the table.
 @(private)
-private_subrs :: proc(cff, dict: []u8, wide := false) -> (subrs: []u8, vsindex: int) {
+private_dict :: proc(cff, dict: []u8) -> (pd: []u8, at: int) {
 	private := [2]int{} // size, offset
 	dict_ints(dict, 18, private[:])
 	if private[0] == 0 || private[1] == 0 {
 		return nil, 0
 	}
-	pd := sub(cff, private[1], private[0])
+	return sub(cff, private[1], private[0]), private[1]
+}
+
+// The local subroutines of a font dict's private dict, and (CFF2) its
+// default variation store data index.
+@(private)
+private_subrs :: proc(cff, dict: []u8, wide := false) -> (subrs: []u8, vsindex: int) {
+	pd, start := private_dict(cff, dict)
+	if pd == nil {
+		return nil, 0
+	}
 	at := [1]int{}
 	dict_ints(pd, 19, at[:])
 	vs := [1]int{}
@@ -235,7 +247,7 @@ private_subrs :: proc(cff, dict: []u8, wide := false) -> (subrs: []u8, vsindex: 
 		return nil, vs[0]
 	}
 	b := Buf{cff, 0}
-	seek(&b, private[1] + at[0])
+	seek(&b, start + at[0])
 	return index_at(&b, wide), vs[0]
 }
 
@@ -269,6 +281,7 @@ cff_load :: proc(f: ^Face, table: []u8) -> Error {
 	dict_ints(top, 0x100 | 36, fdarray[:])
 	dict_ints(top, 0x100 | 37, fdselect[:])
 	c.subrs, _ = private_subrs(c.table, top)
+	c.private, _ = private_dict(c.table, top)
 	if kind[0] != 2 {
 		return .Unsupported
 	}
@@ -704,6 +717,102 @@ cff_outline :: proc(f: ^Face, g: Glyph, out: ^Outline) -> (box: [4]int, ok: bool
 	}
 	b := pen.box
 	return {int(math.floor(b[0])), int(math.floor(b[1])), int(math.ceil(b[2])), int(math.ceil(b[3]))}, pen.count > 0
+}
+
+// A CFF 1 or Type 1 glyph's advance width, and Type 1's side bearing: the
+// charstring run up to its first operator (subroutines followed). Type
+// 1's is hsbw (sbx wx) or sbw (sbx sby wx wy); CFF's is a stack-clearing
+// operator whose one operand too many is the width less nominalWidthX,
+// else the width is defaultWidthX (the glyph's private dict's, 0 when it
+// gives none). False when it can't be read (and for CFF2, which has no
+// widths).
+@(private)
+charstring_width :: proc(f: ^Face, g: Glyph) -> (width, sbx: f64, ok: bool) {
+	c := &f.cff
+	t1 := &f.t1
+	type1 := t1.program != nil
+	if !type1 && (c.table == nil || c.cff2) {
+		return
+	}
+	s: [48]f64
+	sp := 0
+	calls: [10]Buf
+	depth := 0
+	subrs := c.subrs
+	if len(c.fdselect) > 0 {
+		subrs, _ = glyph_subrs(c, g)
+	}
+	b := Buf{type1_charstring(t1, g) if type1 else index_get(c.charstrings, int(g)), 0}
+	for b.pos < len(b.d) {
+		b0 := get8(&b)
+		switch b0 {
+		case 0x0a, 0x1d:
+			// callsubr, callgsubr
+			if sp < 1 || depth >= len(calls) || (type1 && b0 == 0x1d) {
+				return
+			}
+			sp -= 1
+			calls[depth] = b
+			depth += 1
+			if type1 {
+				b = {type1_subr(t1, s[sp]), 0}
+			} else {
+				b = {subr(subrs if b0 == 0x0a else c.gsubrs, int(s[sp])), 0}
+			}
+		case 0x0b:
+			// return
+			if depth == 0 {
+				return
+			}
+			depth -= 1
+			b = calls[depth]
+		case 28, 32 ..= 255:
+			v: f64
+			if b0 == 255 {
+				v = f64(i32(u32(get(&b, 4))))
+				if !type1 {
+					v /= 0x10000
+				}
+			} else {
+				b.pos -= 1
+				v = f64(i16(operand(&b)))
+			}
+			if sp >= len(s) {
+				return
+			}
+			s[sp] = v
+			sp += 1
+		case:
+			if type1 {
+				if b0 == 0x0d && sp >= 2 {
+					return s[sp - 1], s[sp - 2], true
+				}
+				if b0 == 0x0c && get8(&b) == 7 && sp >= 4 {
+					return s[sp - 2], s[sp - 4], true
+				}
+				return
+			}
+			pd := c.private
+			if len(c.fdselect) > 0 {
+				pd, _ = private_dict(c.table, index_get(c.fontdicts, glyph_fd(c, g)))
+			}
+			nominal, default_width: f64
+			if v := dict_get(pd, 21); v != nil {
+				nominal = dict_number(&Buf{v, 0})
+			}
+			if v := dict_get(pd, 20); v != nil {
+				default_width = dict_number(&Buf{v, 0})
+			}
+			// hmoveto and vmoveto take one operand, the others two or
+			// none, hintmask's stems pairs.
+			one := b0 == 0x04 || b0 == 0x16
+			if sp > 0 && (sp % 2 == 1) != one {
+				return nominal + s[0], 0, true
+			}
+			return default_width, 0, true
+		}
+	}
+	return
 }
 
 // CFF2's operand stack holds 513 operands at most (CFF's 48).

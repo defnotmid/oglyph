@@ -345,8 +345,20 @@ test_bare_cff :: proc(t: ^testing.T) {
 			testing.expect_value(t, glyph_matrix(&bare, Glyph(g)), glyph_matrix(&f, Glyph(g)))
 		}
 		testing.expect(t, glyph_outline(&bare, 1, &b))
-		advance, lsb := h_metrics(&bare, 1)
-		testing.expect(t, advance == 0 && lsb == 0)
+		// The charstrings' widths (fontTools' T2WidthExtractor), and in
+		// TinyCID, a real font, hmtx's advances and side bearings (one
+		// width is in a subroutine).
+		for g in 0 ..< f.glyph_count {
+			advance, lsb := h_metrics(&bare, Glyph(g))
+			want_advance, want_lsb := h_metrics(&f, Glyph(g))
+			if raw_data(font) == raw_data(tiny_cff) {
+				widths := [4]int{400, 500, 600, 0}
+				want_advance = widths[g]
+			} else if raw_data(font) == raw_data(tiny_seac) {
+				want_advance, want_lsb = 600, lsb
+			}
+			testing.expectf(t, advance == want_advance && lsb == want_lsb, "glyph %d: %d %d, want %d %d", g, advance, lsb, want_advance, want_lsb)
+		}
 		testing.expect_value(t, glyph_index(&bare, 'A'), 0)
 	}
 	_, err := load_cff(vera)
@@ -580,8 +592,11 @@ test_type1 :: proc(t: ^testing.T) {
 		x0, y0, x1, y1, ok := glyph_box(&f, 3)
 		testing.expect(t, ok)
 		testing.expect_value(t, [4]int{x0, y0, x1, y1}, [4]int{20, 0, 620, 930})
-		advance, lsb := h_metrics(&f, 1)
-		testing.expect(t, advance == 0 && lsb == 0)
+		// hsbw's and sbw's widths and side bearings.
+		for want in ([?][3]int{{1, 600, 20}, {2, 300, 50}, {5, 600, 30}}) {
+			advance, lsb := h_metrics(&f, Glyph(want[0]))
+			testing.expect_value(t, [2]int{advance, lsb}, [2]int{want[1], want[2]})
+		}
 	}
 	_, err := load_type1(vera)
 	testing.expect_value(t, err, Error.Not_A_Font)

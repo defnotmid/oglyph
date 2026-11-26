@@ -495,8 +495,24 @@ cmap_glyph :: proc(f: ^Face, c: ^Cmap, code: rune) -> Glyph {
 	return 0
 }
 
-// The glyph's advance width and left side bearing (font units).
+// The glyph's advance width and left side bearing (font units): hmtx's,
+// or for a face without it (`load_cff`, `load_type1`) its charstring's
+// width, rounded, and Type 1's side bearing or the left edge of a CFF
+// glyph's points (`glyph_box`'s); 0 when they can't be read.
 h_metrics :: proc(f: ^Face, g: Glyph) -> (advance, left_side_bearing: int) {
+	if f.tables[.hmtx].at == 0 {
+		width, sbx, ok := charstring_width(f, g)
+		if !ok {
+			return
+		}
+		advance = int(math.round(width))
+		if f.t1.program != nil {
+			left_side_bearing = int(math.round(sbx))
+		} else if box, drawn := cff_outline(f, g, nil); drawn {
+			left_side_bearing = box[0]
+		}
+		return
+	}
 	i := int(g)
 	if i < len(f.metrics) {
 		m := f.metrics[i]

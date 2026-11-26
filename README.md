@@ -26,10 +26,11 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   program (`load_cff`), a TrueType subset
   with no Unicode cmap (`load`'s `need_cmap`), other cmap subtables
   (`cmap_subtable`: symbolic, Mac Roman), a CID-keyed CFF's CIDs
-  (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), a CFF font's
+  (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), the font's
   built-in Encoding (`builtin_encoding`: Type 1's or CFF's, Standard, Expert
-  or its own), CFF's seac accented glyphs, and the characters a glyph
-  name stands for (`glyph_name_runes`: the Adobe Glyph List's rules).
+  or its own), the advance widths in the charstrings (`h_metrics` without
+  hmtx), CFF's seac accented glyphs, and the characters a glyph name
+  stands for (`glyph_name_runes`: the Adobe Glyph List's rules).
 - **`shape`**: OpenType shaping: Unicode properties, script runs, bidi
   levels, line break opportunities (UAX #14) and normalization from the
   Unicode 17.0.0 character database, HarfBuzz's
