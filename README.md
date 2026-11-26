@@ -21,12 +21,15 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
   gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
   instance, and outlines, advances and shaping follow it. For PDF's
-  embedded fonts: a bare CFF font program (`load_cff`), a TrueType subset
+  embedded fonts: Type 1 fonts (`load_type1`: PFB, PFA or PDF's FontFile,
+  its charstrings with flex, hint replacement and seac), a bare CFF font
+  program (`load_cff`), a TrueType subset
   with no Unicode cmap (`load`'s `need_cmap`), other cmap subtables
   (`cmap_subtable`: symbolic, Mac Roman), a CID-keyed CFF's CIDs
   (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), a CFF font's
-  built-in Encoding (`cff_encoding`: Standard, Expert or its own, with
-  supplements), and CFF's seac accented glyphs.
+  built-in Encoding (`builtin_encoding`: Type 1's or CFF's, Standard, Expert
+  or its own), CFF's seac accented glyphs, and the characters a glyph
+  name stands for (`glyph_name_runes`: the Adobe Glyph List's rules).
 - **`shape`**: OpenType shaping: Unicode properties, script runs, bidi
   levels, line break opportunities (UAX #14) and normalization from the
   Unicode 17.0.0 character database, HarfBuzz's
@@ -197,12 +200,13 @@ odin run tools/shape_corpus -o:speed -- -random:200 -quiet
 odin run tools/line_break_test -o:speed -- LineBreakTest.txt  # Unicode 17.0.0's (ucd/auxiliary)
 perl tools/shape_unicode/gen.pl HARFBUZZ/src > shape/unicode_data.odin        # HarfBuzz 14.6.0's source
 perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odin
+python3 -I tools/font_agl/gen.py > font/agl_data.odin                       # fontTools' Adobe Glyph List
 ```
 
 Some shape tests read installed fonts (Adwaita Sans for variable fonts) and
 skip without them. `assets/` holds the test fonts: Bitstream Vera Sans,
-JetBrains Mono, Noto Sans Arabic Bold, TinyCFF and TinySeac (a few
-generated glyphs) and TinyCID (four glyphs of Noto Sans CJK JP, a CID-keyed
+JetBrains Mono, Noto Sans Arabic Bold, TinyCFF, TinySeac and TinyType1 (a
+few generated glyphs) and TinyCID (four glyphs of Noto Sans CJK JP, a CID-keyed
 CFF, its FontMatrix moved into its font dicts).
 
 The mascot, an octopus with a quill (ink, and arms that curl like a

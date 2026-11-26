@@ -9,10 +9,11 @@
 // Every read is bounds-checked: past the end of the data it gives 0, so a
 // corrupt or truncated font gives wrong glyphs, never a read out of
 // bounds, and `load` rejects a face whose required tables are missing.
-// For PDF's embedded fonts, `load_cff` reads a bare CFF font program and
-// `load` can take a TrueType subset that maps no Unicode characters, both
-// addressed by glyph id (`glyph_cids`, `cmap_subtable`, `glyph_names` and
-// `glyph_matrix` give the rest).
+// For PDF's embedded fonts, `load_cff` reads a bare CFF font program,
+// `load_type1` a Type 1 font, and `load` can take a TrueType subset that
+// maps no Unicode characters, all addressed by glyph id (`glyph_cids`,
+// `cmap_subtable`, `builtin_encoding`, `glyph_names`, `glyph_name_runes`
+// and `glyph_matrix` give the rest).
 //
 // Outlines (`glyph_outline`) are TrueType's quadratic contours (glyf, with
 // composite glyphs) or CFF's Type 2 charstrings (cubic), in font units, y
@@ -123,6 +124,8 @@ Face :: struct {
 	loca_long:                 []U32,
 	cmap:                      Cmap,
 	cff:                       Cff,
+	// A Type 1 font's (`load_type1`).
+	t1:                        Type1,
 	// A variable font's instance (var.odin): each axis's normalized
 	// coordinate (2.14 fixed point; all 0 is the default instance).
 	coords:                    [MAX_AXES]i16,
@@ -364,10 +367,13 @@ load_cff :: proc(data: []u8) -> (f: Face, err: Error) {
 	return f, nil
 }
 
-// Maps glyph `g`'s outline (font units) to an em of 1: CFF's FontMatrix (a
-// CID-keyed font's after the matrix of the glyph's font dict), else 1 /
-// units per em. PDF's text space is this times the font size.
+// Maps glyph `g`'s outline (font units) to an em of 1: Type 1's or CFF's
+// FontMatrix (a CID-keyed font's after the matrix of the glyph's font
+// dict), else 1 / units per em. PDF's text space is this times the font size.
 glyph_matrix :: proc(f: ^Face, g: Glyph) -> matrix[2, 3]f32 {
+	if f.t1.program != nil {
+		return f.t1.font_matrix
+	}
 	c := &f.cff
 	if c.table == nil || c.cff2 {
 		s := 1 / f32(max(f.units_per_em, 1))

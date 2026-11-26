@@ -27,7 +27,7 @@ Cff :: struct {
 	strings:     []u8,
 	charset:     int,
 	// Where the Encoding lies (0 and 1 name Standard and Expert):
-	// `cff_encoding`.
+	// `builtin_encoding`.
 	encoding:    int,
 	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`).
 	font_matrix: matrix[2, 3]f32,
@@ -476,15 +476,20 @@ standard_glyph :: proc(c: ^Cff, code: f64) -> Glyph {
 }
 
 // Sets `out[code]` to the glyph of each code below len(out) (256 at most)
-// in a CFF font's built-in Encoding: Standard, Expert, or its own (glyphs
-// in order given a code each or ranges of codes, then supplements: more
-// codes, each naming its glyph by SID). PDF's Type1C simple fonts encode
-// with it when they give no /Encoding, or no /BaseEncoding under
-// /Differences in a symbolic font. 0 for a code it doesn't encode, and a
-// glyph of the Expert charsets isn't found. False (and `out` all 0) for a
-// face that has none: TrueType, CFF2 or CID-keyed.
-cff_encoding :: proc(f: ^Face, out: []Glyph) -> bool {
+// in a Type 1 or CFF font's built-in Encoding: Type 1's (Standard, or
+// codes named in its Encoding array), or CFF's (Standard, Expert, or its
+// own: glyphs in order given a code each or ranges of codes, then
+// supplements, more codes each naming its glyph by SID). PDF's Type 1 and
+// Type1C simple fonts encode with it when they give no /Encoding, or no
+// /BaseEncoding under /Differences in a symbolic font. 0 for a code it
+// doesn't encode, and a glyph of CFF's Expert charsets isn't found. False
+// (and `out` all 0) for a face that has none: TrueType, CFF2 or CID-keyed.
+builtin_encoding :: proc(f: ^Face, out: []Glyph) -> bool {
 	slice.zero(out)
+	if f.t1.program != nil {
+		copy(out, f.t1.encoding)
+		return true
+	}
 	c := &f.cff
 	if c.table == nil || c.cff2 || c.fontdicts != nil {
 		return false
@@ -611,7 +616,13 @@ subr :: proc(index: []u8, n: int, wide := false) -> []u8 {
 Pen :: struct {
 	out:      ^Outline,
 	started:  bool,
+	// A contour is open (moved to, or drawn into without a move, which
+	// moves to the current point): closing it draws back to `first`.
+	open:     bool,
 	first, p: [2]f64,
+	// Type 1: what hsbw, sbw and setcurrentpoint place from (a seac
+	// accent's offset).
+	origin:   [2]f64,
 	box:      [4]f32, // min x, min y, max x, max y
 	count:    int,
 }
@@ -636,28 +647,39 @@ pen_emit :: proc(pen: ^Pen, v: Verb, pts: ..[2]f64) {
 }
 
 @(private)
+pen_open :: proc(pen: ^Pen) {
+	if !pen.open {
+		pen.first = pen.p
+		pen_emit(pen, .Move, pen.p)
+		pen.open = true
+	}
+}
+
+@(private)
 pen_close :: proc(pen: ^Pen) {
-	if pen.first != pen.p {
+	if pen.open && pen.first != pen.p {
 		pen_emit(pen, .Line, pen.first)
 	}
+	pen.open = false
 }
 
 @(private)
 pen_move :: proc(pen: ^Pen, dx, dy: f64) {
 	pen_close(pen)
 	pen.p += {dx, dy}
-	pen.first = pen.p
-	pen_emit(pen, .Move, pen.p)
+	pen_open(pen)
 }
 
 @(private)
 pen_line :: proc(pen: ^Pen, dx, dy: f64) {
+	pen_open(pen)
 	pen.p += {dx, dy}
 	pen_emit(pen, .Line, pen.p)
 }
 
 @(private)
 pen_curve :: proc(pen: ^Pen, dx1, dy1, dx2, dy2, dx3, dy3: f64) {
+	pen_open(pen)
 	c1 := pen.p + {dx1, dy1}
 	c2 := c1 + {dx2, dy2}
 	pen.p = c2 + {dx3, dy3}
@@ -688,11 +710,20 @@ cff_outline :: proc(f: ^Face, g: Glyph, out: ^Outline) -> (box: [4]int, ok: bool
 @(private)
 CFF_MAX_STACK :: 513
 
-// `seac`: whether endchar may build an accented glyph (not in a seac's
+// Runs a CFF, CFF2 or Type 1 charstring (Type 1's operators are Type 2's
+// but for numbers 255 (an integer), closepath, hsbw and the escapes; its
+// moves and lines take one set of operands, which Type 2's loops read the
+// same). `seac`: whether it may build an accented glyph (not in a seac's
 // own components).
 @(private)
 charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 	c := &f.cff
+	t1 := &f.t1
+	type1 := t1.program != nil
+	// Type 1: a flex is under way (its moves only leave their operands),
+	// and hsbw's side bearing.
+	flexing := false
+	sbx: f64
 	s: [CFF_MAX_STACK]f64
 	sp := 0
 	calls: [10]Buf
@@ -711,7 +742,7 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 	}
 	scalars: [CFF_MAX_STACK]f32
 	regions := -1
-	b := Buf{index_get(c.charstrings, int(g), c.cff2), 0}
+	b := Buf{type1_charstring(t1, g) if type1 else index_get(c.charstrings, int(g), c.cff2), 0}
 	for {
 		if b.pos >= len(b.d) {
 			// CFF2's charstrings and subroutines end with their data.
@@ -765,6 +796,9 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			clear_stack = false
 		case 0x13, 0x14:
 			// hintmask, cntrmask: the stems before them are implied vstems.
+			if type1 {
+				return false
+			}
 			if in_header {
 				mask_bits += sp / 2
 			}
@@ -772,26 +806,45 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			seek(&b, b.pos + (mask_bits + 7) / 8)
 		case 0x01, 0x03, 0x12, 0x17:
 			// hstem, vstem, hstemhm, vstemhm
+			if type1 && b0 > 0x03 {
+				return false
+			}
 			mask_bits += sp / 2
 		case 0x15:
 			// rmoveto
 			in_header = false
+			if flexing {
+				clear_stack = false
+				break
+			}
 			if sp < 2 {
 				return false
 			}
 			pen_move(pen, s[sp - 2], s[sp - 1])
 		case 0x04:
-			// vmoveto
+			// vmoveto (in a flex: its dy as dx = 0, dy)
 			in_header = false
-			if sp < 1 {
+			if sp < 1 || (flexing && sp >= len(s)) {
 				return false
+			}
+			if flexing {
+				s[sp], s[sp - 1] = s[sp - 1], 0
+				sp += 1
+				clear_stack = false
+				break
 			}
 			pen_move(pen, 0, s[sp - 1])
 		case 0x16:
-			// hmoveto
+			// hmoveto (in a flex: its dx as dx, dy = 0)
 			in_header = false
-			if sp < 1 {
+			if sp < 1 || (flexing && sp >= len(s)) {
 				return false
+			}
+			if flexing {
+				s[sp] = 0
+				sp += 1
+				clear_stack = false
+				break
 			}
 			pen_move(pen, s[sp - 1], 0)
 		case 0x05:
@@ -842,7 +895,7 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			}
 		case 0x18:
 			// rcurveline
-			if sp < 8 {
+			if sp < 8 || type1 {
 				return false
 			}
 			for ; i + 5 < sp - 2; i += 6 {
@@ -854,7 +907,7 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			pen_line(pen, s[i], s[i + 1])
 		case 0x19:
 			// rlinecurve
-			if sp < 8 {
+			if sp < 8 || type1 {
 				return false
 			}
 			for ; i + 1 < sp - 6; i += 2 {
@@ -867,7 +920,7 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 		case 0x1a, 0x1b:
 			// vvcurveto, hhcurveto; an odd operand first starts the first
 			// curve off-axis.
-			if sp < 4 {
+			if sp < 4 || type1 {
 				return false
 			}
 			off: f64
@@ -885,6 +938,21 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			}
 		case 0x0a, 0x1d:
 			// callsubr, callgsubr
+			if type1 {
+				// Type 1's Subrs, unbiased; no global ones.
+				if b0 == 0x1d || sp < 1 || depth >= len(calls) {
+					return false
+				}
+				sp -= 1
+				calls[depth] = b
+				depth += 1
+				b = {type1_subr(t1, s[sp]), 0}
+				if len(b.d) == 0 {
+					return false
+				}
+				clear_stack = false
+				break
+			}
 			if b0 == 0x0a && !have_subrs {
 				if len(c.fdselect) > 0 {
 					subrs, _ = glyph_subrs(c, g)
@@ -916,7 +984,7 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			// only): the glyph is its base glyph and its accent moved by
 			// (adx, ady), each named by its Standard Encoding code.
 			pen_close(pen)
-			if sp < 4 || c.cff2 {
+			if sp < 4 || c.cff2 || type1 {
 				return true
 			}
 			adx, ady := s[sp - 4], s[sp - 3]
@@ -924,19 +992,103 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 			if !seac || base == 0 || accent == 0 {
 				return false
 			}
-			pen.p, pen.first = {}, {}
+			pen.p = {}
 			charstring(f, base, pen, false) or_return
-			pen.p, pen.first = {adx, ady}, {adx, ady}
+			pen_close(pen)
+			pen.p = {adx, ady}
 			return charstring(f, accent, pen, false)
+		case 0x09:
+			// closepath (Type 1): the current point stays.
+			if !type1 {
+				return false
+			}
+			pen_close(pen)
+		case 0x0d:
+			// hsbw (Type 1): sbx wx; the glyph starts at (sbx, 0).
+			if !type1 || sp < 2 {
+				return false
+			}
+			sbx = s[sp - 2]
+			pen.p = pen.origin + {sbx, 0}
 		case 0x0c:
-			flex(pen, get8(&b), s[:sp]) or_return
+			op := get8(&b)
+			if !type1 {
+				flex(pen, op, s[:sp]) or_return
+				break
+			}
+			switch op {
+			case 0, 1, 2:
+			// dotsection, vstem3, hstem3
+			case 6:
+				// seac: asb adx ady bchar achar
+				if sp < 5 || !seac {
+					return false
+				}
+				return type1_seac(f, pen, s[sp - 5:sp], sbx)
+			case 7:
+				// sbw: sbx sby wx wy; the glyph starts at (sbx, sby).
+				if sp < 4 {
+					return false
+				}
+				sbx = s[sp - 4]
+				pen.p = pen.origin + {s[sp - 4], s[sp - 3]}
+			case 12:
+				// div
+				if sp < 2 || s[sp - 1] == 0 {
+					return false
+				}
+				s[sp - 2] /= s[sp - 1]
+				sp -= 1
+				clear_stack = false
+			case 16:
+				// callothersubr: other n; its arguments stay, for pop.
+				// OtherSubr 1 starts a flex and 0 ends it: two curves from
+				// the reference point and six points the moves left, its
+				// end left for setcurrentpoint. The others (2 a flex
+				// point, 3 hint replacement) draw nothing.
+				if sp < 2 {
+					return false
+				}
+				other, n := s[sp - 1], s[sp - 2]
+				sp -= 2
+				if other == 0 && n == 3 {
+					if sp < 17 {
+						return false
+					}
+					v := s[sp - 17:sp]
+					pen_curve(pen, v[0] + v[2], v[1] + v[3], v[4], v[5], v[6], v[7])
+					pen_curve(pen, v[8], v[9], v[10], v[11], v[12], v[13])
+					v[0], v[1] = v[15], v[16]
+					sp -= 15
+					flexing = false
+				} else if other == 1 && n == 0 {
+					flexing = true
+				}
+				clear_stack = false
+			case 17:
+				// pop: callothersubr's results, its arguments, stay.
+				clear_stack = false
+			case 33:
+				// setcurrentpoint
+				if sp < 2 {
+					return false
+				}
+				pen.p = pen.origin + {s[sp - 2], s[sp - 1]}
+			case:
+				return false
+			}
 		case:
+			// Operands: 32 to 254, 28 (a 16-bit integer), 255 (16.16 fixed;
+			// Type 1's a 32-bit integer).
 			if b0 != 255 && b0 != 28 && b0 < 32 {
 				return false
 			}
 			v: f64
 			if b0 == 255 {
-				v = f64(i32(u32(get(&b, 4)))) / 0x10000
+				v = f64(i32(u32(get(&b, 4))))
+				if !type1 {
+					v /= 0x10000
+				}
 			} else {
 				b.pos -= 1
 				v = f64(i16(operand(&b)))

@@ -24,6 +24,14 @@ tiny_cid := #load("../assets/TinyCID.otf")
 @(private = "file")
 tiny_seac := #load("../assets/TinySeac.otf")
 
+// Generated (fontTools' charstring compiler and eexec cipher), a PFB: A,
+// acute, Aacute as a seac of them (asb 50, adx 170, ady 30), "flexed" (a
+// flex through the standard Subrs 0 to 2 with hmoveto and vmoveto in it,
+// hint replacement through OtherSubr 3, and div), "sbw" (placed by sbw),
+// and an Encoding of its own.
+@(private = "file")
+tiny_type1 := #load("../assets/TinyType1.pfb")
+
 // The font's CFF table, as PDF embeds it.
 @(private = "file")
 cff_table :: proc(font: []u8) -> []u8 {
@@ -55,7 +63,7 @@ read_all :: proc(f: ^Face, o: ^Outline) {
 	defer delete(cids)
 	glyph_cids(f, cids)
 	codes: [256]Glyph
-	cff_encoding(f, codes[:])
+	builtin_encoding(f, codes[:])
 	for g in 0 ..< len(names) do glyph_matrix(f, Glyph(g))
 	for pe in ([?][2]u16{{3, 0}, {1, 0}, {3, 1}}) {
 		if c, ok := cmap_subtable(f, pe[0], pe[1]); ok {
@@ -264,6 +272,56 @@ test_corrupt :: proc(t: ^testing.T) {
 			}
 		}
 	}
+	// Type 1: as a PFB, and as PDF's FontFile (its cleartext and binary
+	// eexec part), cut short and corrupted.
+	pdf := type1_fontfile(tiny_type1, false)
+	defer delete(pdf)
+	for font in ([?][]u8{tiny_type1, pdf}) {
+		for size := 0; size < len(font); size += 7 {
+			if f, err := load_type1(font[:size]); err == nil {
+				read_all(&f, &o)
+				face_destroy(&f)
+			}
+		}
+		data := make([]u8, len(font))
+		defer delete(data)
+		for _ in 0 ..< 300 {
+			copy(data, font)
+			for _ in 0 ..< 1 + rand.int_max(16, rand.default_random_generator(&r)) {
+				data[rand.int_max(len(data), rand.default_random_generator(&r))] = u8(rand.uint32(rand.default_random_generator(&r)))
+			}
+			if f, err := load_type1(data); err == nil {
+				read_all(&f, &o)
+				face_destroy(&f)
+			}
+		}
+	}
+}
+
+// A PFB's segments as PDF's FontFile holds them: the cleartext, then the
+// eexec part in binary or (`hex`) as hexadecimal lines.
+@(private = "file")
+type1_fontfile :: proc(pfb: []u8, hex: bool) -> []u8 {
+	out: [dynamic]u8
+	for at := 0; at + 6 <= len(pfb) && pfb[at] == 0x80 && pfb[at + 1] != 3; {
+		size := int(pfb[at + 2]) | int(pfb[at + 3]) << 8 | int(pfb[at + 4]) << 16 | int(pfb[at + 5]) << 24
+		seg := pfb[at + 6:][:size]
+		at += 6 + size
+		if pfb[at - 6 - size + 1] == 1 {
+			append(&out, ..seg)
+			continue
+		}
+		digits := "0123456789abcdef"
+		for c, i in seg {
+			if !hex {
+				append(&out, c)
+				continue
+			}
+			append(&out, digits[c >> 4], digits[c & 0xf])
+			if i % 32 == 31 do append(&out, '\n')
+		}
+	}
+	return out[:]
 }
 
 // A CFF table read alone (PDF's FontFile3) gives the outlines it gives in
@@ -405,21 +463,21 @@ test_no_unicode_cmap :: proc(t: ^testing.T) {
 // none in a CID-keyed or TrueType font; ranges of codes with supplements,
 // and Expert, over a custom charset.
 @(test)
-test_cff_encoding :: proc(t: ^testing.T) {
+test_builtin_encoding :: proc(t: ^testing.T) {
 	codes: [256]Glyph
 	want: [256]Glyph
 	f, _ := load(tiny_cff) // .notdef, B, A, space
-	testing.expect(t, cff_encoding(&f, codes[:]))
+	testing.expect(t, builtin_encoding(&f, codes[:]))
 	want[' '], want['A'], want['B'] = 3, 2, 1
 	testing.expect_value(t, codes, want)
 	f, _ = load_cff(cff_table(tiny_seac))
-	testing.expect(t, cff_encoding(&f, codes[:]))
+	testing.expect(t, builtin_encoding(&f, codes[:]))
 	want = {}
 	want[0x41], want[0xab], want[0xc1] = 1, 2, 3
 	testing.expect_value(t, codes, want)
 	for font in ([?][]u8{tiny_cid, vera}) {
 		f, _ = load(font)
-		testing.expect(t, !cff_encoding(&f, codes[:]))
+		testing.expect(t, !builtin_encoding(&f, codes[:]))
 		testing.expect_value(t, codes, [256]Glyph{})
 	}
 
@@ -429,18 +487,104 @@ test_cff_encoding :: proc(t: ^testing.T) {
 	bytes := [?]u8{0, 0, 0, 0, 0, 34, 0, 229, 0, 1, 0x81, 1, 0x61, 2, 2, 0x41, 0, 34, 0x20, 0, 1}
 	count := [2]u8{0, 4}
 	g := Face{cff = {table = bytes[:], charstrings = count[:], charset = 3, encoding = 10}}
-	testing.expect(t, cff_encoding(&g, codes[:]))
+	testing.expect(t, builtin_encoding(&g, codes[:]))
 	want = {}
 	want[0x61], want[0x62], want[0x63], want[0x41], want[0x20] = 1, 2, 3, 1, 3
 	testing.expect_value(t, codes, want)
 	// Expert Encoding: space is 0x20, exclamsmall 0x21; A has no code.
 	g.cff.encoding = 1
-	testing.expect(t, cff_encoding(&g, codes[:]))
+	testing.expect(t, builtin_encoding(&g, codes[:]))
 	want = {}
 	want[0x20], want[0x21] = 3, 2
 	testing.expect_value(t, codes, want)
 	// A short `out` takes the codes below its length.
 	short: [0x21]Glyph
-	testing.expect(t, cff_encoding(&g, short[:]))
+	testing.expect(t, builtin_encoding(&g, short[:]))
 	testing.expect_value(t, short[0x20], 3)
+}
+
+// Glyph names to characters by the Adobe Glyph List's rules (fontTools'
+// agl.toUnicode agrees on every AGL and installed font's glyph name).
+@(test)
+test_glyph_name_runes :: proc(t: ^testing.T) {
+	Case :: struct {
+		name: string,
+		zapf: bool,
+		want: []rune,
+	}
+	cases := [?]Case {
+		{"Aacute", false, {0xc1}},
+		{"dalethatafpatah", false, {0x5d3, 0x5b2}},
+		{"f_f_i.alt", false, {'f', 'f', 'i'}},
+		{"uni20AC0308", false, {0x20ac, 0x308}},
+		{"uni20ac", false, {}},
+		{"uniD800", false, {}},
+		{"u1F600.sc", false, {0x1f600}},
+		{"u110000", false, {}},
+		{"a1", false, {}},
+		{"a1", true, {0x2701}},
+		{"A_a1", true, {'A', 0x2701}},
+		{".notdef", false, {}},
+		{"", false, {}},
+	}
+	out: [4]rune
+	for c in cases {
+		n := glyph_name_runes(c.name, out[:], c.zapf)
+		testing.expectf(t, n == len(c.want) && slice.equal(out[:n], c.want), "%s: %v", c.name, out[:n])
+	}
+	// nil counts; a short out takes what reaches.
+	testing.expect_value(t, glyph_name_runes("f_f_i", nil), 3)
+	testing.expect_value(t, glyph_name_runes("f_f_i", out[:1]), 3)
+	testing.expect_value(t, out[0], 'f')
+}
+
+// A Type 1 font (fontTools draws the same, but for sbw, which it skips):
+// read as a PFB, as PDF's FontFile in binary and in hexadecimal.
+@(test)
+test_type1 :: proc(t: ^testing.T) {
+	pdf, hex := type1_fontfile(tiny_type1, false), type1_fontfile(tiny_type1, true)
+	defer delete(pdf)
+	defer delete(hex)
+	o: Outline
+	defer outline_destroy(&o)
+	for font in ([?][]u8{tiny_type1, pdf, hex}) {
+		f, err := load_type1(font)
+		defer face_destroy(&f)
+		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, f.glyph_count, 6)
+		testing.expect_value(t, f.units_per_em, 1000)
+		testing.expect_value(t, glyph_matrix(&f, 1), matrix[2, 3]f32{0.001, 0, 0, 0, 0.001, 0})
+		names: [6]string
+		glyph_names(&f, names[:])
+		testing.expect_value(t, names, [6]string{".notdef", "A", "acute", "Aacute", "flexed", "sbw"})
+		codes, want_codes: [256]Glyph
+		testing.expect(t, builtin_encoding(&f, codes[:]))
+		want_codes['A'], want_codes[0xab], want_codes[0xc1], want_codes['f'], want_codes['s'] = 1, 2, 3, 4, 5
+		testing.expect_value(t, codes, want_codes)
+		testing.expect(t, !glyph_outline(&f, 0, &o))
+		Case :: struct {
+			g:      Glyph,
+			verbs:  []Verb,
+			points: [][2]f32,
+		}
+		cases := [?]Case {
+			{1, {.Move, .Line, .Line, .Line}, {{20, 0}, {320, 700}, {620, 0}, {20, 0}}},
+			{3, {.Move, .Line, .Line, .Line, .Move, .Line, .Line, .Line, .Line}, {{20, 0}, {320, 700}, {620, 0}, {20, 0}, {240, 780}, {340, 780}, {340, 930}, {240, 930}, {240, 780}}},
+			{4, {.Move, .Cubic, .Cubic, .Line}, {{100, 0}, {150, 30}, {170, 30}, {200, 30}, {230, 30}, {250, 30}, {250, 0}, {100, 0}}},
+			{5, {.Move, .Line, .Line, .Line}, {{30, 40}, {130, 40}, {130, 140}, {30, 40}}},
+		}
+		for c in cases {
+			testing.expect(t, glyph_outline(&f, c.g, &o))
+			testing.expectf(t, slice.equal(o.verbs[:], c.verbs) && slice.equal(o.points[:], c.points), "glyph %d: %v %v", c.g, o.verbs, o.points)
+		}
+		x0, y0, x1, y1, ok := glyph_box(&f, 3)
+		testing.expect(t, ok)
+		testing.expect_value(t, [4]int{x0, y0, x1, y1}, [4]int{20, 0, 620, 930})
+		advance, lsb := h_metrics(&f, 1)
+		testing.expect(t, advance == 0 && lsb == 0)
+	}
+	_, err := load_type1(vera)
+	testing.expect_value(t, err, Error.Not_A_Font)
+	_, err = load_type1(nil)
+	testing.expect_value(t, err, Error.Not_A_Font)
 }

@@ -61,7 +61,8 @@ name_string :: proc(f: ^Face, name_id: u16, allocator := context.allocator) -> s
 	return strings.clone(mac, allocator) if mac != "" else ""
 }
 
-// Glyph names, for a glyph browser: post's (TrueType) or the CFF charset's.
+// Glyph names, for a glyph browser: post's (TrueType), the CFF charset's,
+// or a Type 1 font's CharStrings'.
 
 // Sets `out[g]` to the name of each glyph g below len(out): a slice of the
 // font data or a static string, "" when the face names none (post format 3,
@@ -70,6 +71,12 @@ name_string :: proc(f: ^Face, name_id: u16, allocator := context.allocator) -> s
 glyph_names :: proc(f: ^Face, out: []string) {
 	for &n in out {
 		n = ""
+	}
+	if t := &f.t1; t.program != nil {
+		for &n, g in out[:min(len(out), len(t.names))] {
+			n = type1_text(t, t.names[g])
+		}
+		return
 	}
 	if f.cff.table != nil {
 		cff_glyph_names(&f.cff, out)
@@ -214,4 +221,99 @@ CFF_STRINGS := [391]string{
 	"Uacutesmall", "Ucircumflexsmall", "Udieresissmall", "Yacutesmall", "Thornsmall",
 	"Ydieresissmall", "001.000", "001.001", "001.002", "001.003", "Black", "Bold", "Book", "Light",
 	"Medium", "Regular", "Roman", "Semibold",
+}
+// The characters glyph name `name` stands for, by the Adobe Glyph List
+// specification: the name up to its first period, each part between
+// underscores mapped and the results joined. A part maps by Zapf Dingbats'
+// list (aN, when `zapf_dingbats`: the font is ZapfDingbats), else by the
+// Adobe Glyph List (Aacute, dalethatafpatah: one character or more), else
+// as uni and groups of four uppercase hexadecimal digits (BMP, no
+// surrogates), else as u and four to six digits; else to nothing. Into
+// `out` as far as it reaches (nil to count); how many there are. PDF
+// draws a simple TrueType font's /Differences names through them and the
+// (3, 1) cmap, and extracts text by them.
+glyph_name_runes :: proc(name: string, out: []rune, zapf_dingbats := false) -> int {
+	emit :: proc(out: []rune, n: int, r: rune) -> int {
+		if n < len(out) {
+			out[n] = r
+		}
+		return n + 1
+	}
+	// Uppercase hexadecimal digits only; -1 for anything else.
+	hex :: proc(s: string) -> int {
+		v := 0
+		for c in transmute([]u8)s {
+			switch c {
+			case '0' ..= '9':
+				v = v << 4 | int(c - '0')
+			case 'A' ..= 'F':
+				v = v << 4 | int(c - 'A' + 10)
+			case:
+				return -1
+			}
+		}
+		return v
+	}
+	rest := name
+	if i := strings.index_byte(rest, '.'); i >= 0 {
+		rest = rest[:i]
+	}
+	n := 0
+	for part in strings.split_iterator(&rest, "_") {
+		if zapf_dingbats && len(part) >= 2 && part[0] == 'a' {
+			if k := decimal(part[1:]); k >= 0 && k < len(ZAPF_DINGBATS) && ZAPF_DINGBATS[k] != 0 {
+				n = emit(out, n, rune(ZAPF_DINGBATS[k]))
+				continue
+			}
+		}
+		// The first name at or after part.
+		lo, hi := 0, len(AGL_NAME_AT) - 1
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if AGL_TEXT[AGL_NAME_AT[mid]:AGL_NAME_AT[mid + 1]] < part {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		if lo < len(AGL_NAME_AT) - 1 && AGL_TEXT[AGL_NAME_AT[lo]:AGL_NAME_AT[lo + 1]] == part {
+			for r in AGL_RUNES[AGL_RUNE_AT[lo]:AGL_RUNE_AT[lo + 1]] {
+				n = emit(out, n, rune(r))
+			}
+			continue
+		}
+		if digits := part[3:] if strings.has_prefix(part, "uni") else ""; len(digits) > 0 && len(digits) % 4 == 0 {
+			ok := true
+			for i := 0; i < len(digits); i += 4 {
+				if v := hex(digits[i:][:4]); v < 0 || (v >= 0xd800 && v <= 0xdfff) {
+					ok = false
+				}
+			}
+			for i := 0; ok && i < len(digits); i += 4 {
+				n = emit(out, n, rune(hex(digits[i:][:4])))
+			}
+			if ok {
+				continue
+			}
+		}
+		if len(part) >= 5 && len(part) <= 7 && part[0] == 'u' {
+			if v := hex(part[1:]); v >= 0 && (v <= 0xd7ff || (v >= 0xe000 && v <= 0x10ffff)) {
+				n = emit(out, n, rune(v))
+			}
+		}
+	}
+	return n
+}
+
+// Decimal digits only, at most 0xffff; -1 for anything else.
+@(private)
+decimal :: proc(s: string) -> int {
+	v := 0
+	for c in transmute([]u8)s {
+		if c < '0' || c > '9' || v > 0xffff {
+			return -1
+		}
+		v = v * 10 + int(c - '0')
+	}
+	return v
 }

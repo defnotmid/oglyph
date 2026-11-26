@@ -9,3 +9,4 @@ separate file in [LICENSES/](LICENSES).
 | Unicode Character Database 17.0.0 | `shape/unicode_data.odin`: generated from its data files (`tools/shape_unicode/gen.pl`) | `LICENSES/Unicode-3.0.txt` |
 | Bitstream Vera Sans | `assets/Vera.ttf`: the tests' font | `LICENSES/Bitstream-Vera.txt` |
 | JetBrains Mono, Noto Sans Arabic, Noto Sans CJK JP | `assets/JetBrainsMono-Regular.ttf`, `assets/NotoSansArabic-Bold.ttf`, `assets/TinyCID.otf` (four of Noto Sans CJK JP's glyphs, subset with fontTools, the FontMatrix moved into its font dicts): the tests' fonts (SIL Open Font License 1.1) | `LICENSES/OFL-1.1.txt` |
+| Adobe Glyph List 2.0, ITC Zapf Dingbats Glyph List | `font/agl_data.odin`: generated from fontTools' copy of the lists (`tools/font_agl/gen.py`) | `LICENSES/AGL-BSD-3.txt` |
