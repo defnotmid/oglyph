@@ -2,6 +2,7 @@ package font
 
 import "core:math"
 import "core:slice"
+import "core:strconv"
 
 // CFF (OpenType's PostScript outlines): Type 2 charstrings, run for each
 // glyph. Hints are skipped; flex is drawn as its two curves.
@@ -25,6 +26,8 @@ Cff :: struct {
 	// and 2 name the predefined ones): glyph names (names.odin).
 	strings:     []u8,
 	charset:     int,
+	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`).
+	font_matrix: matrix[2, 3]f32,
 	// CFF2: INDEX counts are 32-bit; blends read the variation store at
 	// `vstore` in the table (0 for none).
 	cff2:        bool,
@@ -126,6 +129,35 @@ operand :: proc(b: ^Buf) -> i32 {
 	return 0
 }
 
+// A DICT operand, integer or real: a real is decimal nibbles (digits, a
+// point, E, E-, a minus) up to an end nibble; 0 when it can't be read.
+@(private)
+dict_number :: proc(b: ^Buf) -> f64 {
+	if read_u8(b.d, b.pos) != 30 {
+		return f64(operand(b))
+	}
+	b.pos += 1
+	text: [64]u8
+	n := 0
+	for b.pos < len(b.d) {
+		v := get8(b)
+		for nibble in ([2]int{v >> 4, v & 0xf}) {
+			if nibble == 0xf {
+				x, _ := strconv.parse_f64(string(text[:n]))
+				return x
+			}
+			if s := NIBBLES[nibble]; n + len(s) <= len(text) {
+				n += copy(text[n:], s)
+			}
+		}
+	}
+	return 0
+}
+
+// A real operand's nibbles as text (0xd is reserved; 0xf ends it).
+@(private, rodata)
+NIBBLES := [15]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "E", "E-", "", "-"}
+
 // The operands of `key` in a DICT (a two-byte operator is 0x100 | its
 // second byte).
 @(private)
@@ -134,18 +166,7 @@ dict_get :: proc(dict: []u8, key: int) -> []u8 {
 	for b.pos < len(b.d) {
 		start := b.pos
 		for b.pos < len(b.d) && b.d[b.pos] >= 28 {
-			if b.d[b.pos] == 30 {
-				// A real number: nibbles up to an end nibble.
-				b.pos += 1
-				for b.pos < len(b.d) {
-					v := get8(&b)
-					if v & 0xf == 0xf || v >> 4 == 0xf {
-						break
-					}
-				}
-			} else {
-				operand(&b)
-			}
+			dict_number(&b)
 		}
 		end := b.pos
 		op := get8(&b)
@@ -157,6 +178,27 @@ dict_get :: proc(dict: []u8, key: int) -> []u8 {
 		}
 	}
 	return nil
+}
+
+// A DICT's FontMatrix [a b c d e f] (x' = a x + c y + e, y' = b x + d y +
+// f); false when it has none.
+@(private)
+font_matrix :: proc(dict: []u8) -> (m: matrix[2, 3]f32, ok: bool) {
+	b := Buf{dict_get(dict, 0x100 | 7), 0}
+	if len(b.d) == 0 {
+		return
+	}
+	v: [6]f32
+	for &x in v {
+		x = f32(dict_number(&b))
+	}
+	return {v[0], v[2], v[4], v[1], v[3], v[5]}, true
+}
+
+// a after b, both affine maps.
+@(private)
+affine_mul :: proc(a, b: matrix[2, 3]f32) -> matrix[2, 3]f32 {
+	return a * matrix[3, 3]f32{b[0, 0], b[0, 1], b[0, 2], b[1, 0], b[1, 1], b[1, 2], 0, 0, 1}
 }
 
 @(private)
@@ -194,11 +236,11 @@ private_subrs :: proc(cff, dict: []u8, wide := false) -> (subrs: []u8, vsindex: 
 	return index_at(&b, wide), vs[0]
 }
 
+// The CFF table `table` (a slice of the face's data).
 @(private)
-cff_load :: proc(f: ^Face) -> Error {
-	t := f.tables[.CFF]
+cff_load :: proc(f: ^Face, table: []u8) -> Error {
 	c := &f.cff
-	c.table = f.data[t.at:][:t.size]
+	c.table = table
 	if read_u8(c.table, 0) != 1 {
 		// CFF2 (variable) and unknown versions.
 		return .Unsupported
@@ -214,6 +256,10 @@ cff_load :: proc(f: ^Face) -> Error {
 	dict_ints(top, 17, charstrings[:])
 	dict_ints(top, 15, charset[:])
 	c.charset = charset[0]
+	ok: bool
+	if c.font_matrix, ok = font_matrix(top); !ok {
+		c.font_matrix = {0.001, 0, 0, 0, 0.001, 0}
+	}
 	dict_ints(top, 0x100 | 6, kind[:])
 	dict_ints(top, 0x100 | 36, fdarray[:])
 	dict_ints(top, 0x100 | 37, fdselect[:])
@@ -287,6 +333,13 @@ Fd_Range :: struct #packed {
 // font dict's default variation store data index.
 @(private)
 glyph_subrs :: proc(c: ^Cff, g: Glyph) -> (subrs: []u8, vsindex: int) {
+	return private_subrs(c.table, index_get(c.fontdicts, glyph_fd(c, g), c.cff2), c.cff2)
+}
+
+// The font dict of a CID-keyed font (or CFF2) that glyph `g` takes; -1
+// for none.
+@(private)
+glyph_fd :: proc(c: ^Cff, g: Glyph) -> int {
 	// CFF2 without a selector has one font dict.
 	fd := 0 if c.cff2 && len(c.fdselect) == 0 else -1
 	switch read_u8(c.fdselect, 0) {
@@ -323,8 +376,103 @@ glyph_subrs :: proc(c: ^Cff, g: Glyph) -> (subrs: []u8, vsindex: int) {
 			fd = int(read_u16(c.fdselect, 5 + 6 * (lo - 1) + 4))
 		}
 	}
-	return private_subrs(c.table, index_get(c.fontdicts, fd, c.cff2), c.cff2)
+	return fd
 }
+
+// A custom charset's glyphs from 1 on, each with its SID (its CID in a
+// CID-keyed font): a SID each (format 0), or ranges of consecutive SIDs
+// with an 8-bit (1) or 16-bit (2) count after the first.
+@(private)
+Charset :: struct {
+	b:                   Buf,
+	format, left, g, id: int,
+}
+
+@(private)
+charset_init :: proc(c: ^Cff) -> (it: Charset) {
+	it.b = {c.table, 0}
+	seek(&it.b, c.charset)
+	it.format = get8(&it.b)
+	it.g = 1
+	return
+}
+
+// The next glyph and its id; false past the charset's end.
+@(private)
+charset_next :: proc(it: ^Charset) -> (g, id: int, ok: bool) {
+	if it.left == 0 {
+		if it.format > 2 || it.b.pos >= len(it.b.d) {
+			return
+		}
+		it.id = get(&it.b, 2)
+		it.left = 1 + get(&it.b, it.format)
+	}
+	g, id = it.g, it.id
+	it.g, it.id, it.left = it.g + 1, it.id + 1, it.left - 1
+	return g, id, true
+}
+
+// Sets `out[g]` to the CID of each glyph g below len(out), from a CID-keyed
+// CFF's charset (glyph 0 is CID 0), for PDF's CIDFontType0 fonts to map
+// CIDs to glyphs once. False (and `out` all 0) for any other face: in PDF
+// a CID addresses its glyphs directly.
+glyph_cids :: proc(f: ^Face, out: []u16) -> bool {
+	slice.zero(out)
+	c := &f.cff
+	if c.fontdicts == nil || c.cff2 || c.charset < 3 {
+		return false
+	}
+	it := charset_init(c)
+	for g, cid in charset_next(&it) {
+		if g >= len(out) {
+			break
+		}
+		out[g] = u16(cid)
+	}
+	return true
+}
+
+// The glyph named by Standard Encoding code `code` (seac's operands): its
+// SID found in the charset; 0 for none.
+@(private)
+standard_glyph :: proc(c: ^Cff, code: f64) -> Glyph {
+	k := int(code)
+	if f64(k) != code {
+		return 0
+	}
+	sid := 0
+	for r in STANDARD_ENCODING {
+		if k >= int(r.first) && k <= int(r.last) {
+			sid = int(r.sid) + k - int(r.first)
+		}
+	}
+	count := index_count(c.charstrings)
+	switch c.charset {
+	case 0:
+		// ISOAdobe: glyph g is SID g.
+		return Glyph(sid) if sid > 0 && sid < min(229, count) else 0
+	case 1, 2:
+		return 0
+	}
+	it := charset_init(c)
+	for g, id in charset_next(&it) {
+		if g >= count {
+			break
+		}
+		if id == sid && sid > 0 {
+			return Glyph(g)
+		}
+	}
+	return 0
+}
+
+// Standard Encoding's runs of codes, first ..= last, and the SID of the
+// first: the names seac's codes stand for.
+@(private, rodata)
+STANDARD_ENCODING := [?]struct {
+	first, last: u8,
+	sid:         u16,
+}{{32, 126, 1}, {161, 175, 96}, {177, 180, 111}, {182, 189, 115}, {191, 191, 123}, {193, 200, 124}, {202, 203, 132}, {205, 208, 134}, {225, 225, 138}, {227, 227, 139}, {232, 235, 140}, {241, 241, 144}, {245, 245, 145}, {248, 251, 146}}
 
 @(private)
 subr :: proc(index: []u8, n: int, wide := false) -> []u8 {
@@ -424,8 +572,10 @@ cff_outline :: proc(f: ^Face, g: Glyph, out: ^Outline) -> (box: [4]int, ok: bool
 @(private)
 CFF_MAX_STACK :: 513
 
+// `seac`: whether endchar may build an accented glyph (not in a seac's
+// own components).
 @(private)
-charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen) -> bool {
+charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen, seac := true) -> bool {
 	c := &f.cff
 	s: [CFF_MAX_STACK]f64
 	sp := 0
@@ -646,9 +796,22 @@ charstring :: proc(f: ^Face, g: Glyph, pen: ^Pen) -> bool {
 			b = calls[depth]
 			clear_stack = false
 		case 0x0e:
-			// endchar
+			// endchar. With four operands (after a width) it is seac (CFF 1
+			// only): the glyph is its base glyph and its accent moved by
+			// (adx, ady), each named by its Standard Encoding code.
 			pen_close(pen)
-			return true
+			if sp < 4 || c.cff2 {
+				return true
+			}
+			adx, ady := s[sp - 4], s[sp - 3]
+			base, accent := standard_glyph(c, s[sp - 2]), standard_glyph(c, s[sp - 1])
+			if !seac || base == 0 || accent == 0 {
+				return false
+			}
+			pen.p, pen.first = {}, {}
+			charstring(f, base, pen, false) or_return
+			pen.p, pen.first = {adx, ady}, {adx, ady}
+			return charstring(f, accent, pen, false)
 		case 0x0c:
 			flex(pen, get8(&b), s[:sp]) or_return
 		case:

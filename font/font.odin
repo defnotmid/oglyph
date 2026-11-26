@@ -9,12 +9,17 @@
 // Every read is bounds-checked: past the end of the data it gives 0, so a
 // corrupt or truncated font gives wrong glyphs, never a read out of
 // bounds, and `load` rejects a face whose required tables are missing.
+// For PDF's embedded fonts, `load_cff` reads a bare CFF font program and
+// `load` can take a TrueType subset that maps no Unicode characters, both
+// addressed by glyph id (`glyph_cids`, `cmap_subtable`, `glyph_names` and
+// `glyph_matrix` give the rest).
 //
 // Outlines (`glyph_outline`) are TrueType's quadratic contours (glyf, with
 // composite glyphs) or CFF's Type 2 charstrings (cubic), in font units, y
 // up.
 package font
 
+import "core:math"
 import "core:slice"
 
 Error :: enum u8 {
@@ -26,7 +31,8 @@ Error :: enum u8 {
 	// cmap, head, hhea or hmtx is missing, or all of glyf (with loca), CFF
 	// and CFF2.
 	Missing_Table,
-	// No cmap subtable maps Unicode, or a table's header is cut short.
+	// No cmap subtable maps Unicode (unless `load`'s need_cmap is false),
+	// or a table's header is cut short.
 	Bad_Table,
 	// CFF other than version 1 with Type 2 charstrings (or CFF2).
 	Unsupported,
@@ -257,8 +263,11 @@ face_count :: proc(data: []u8) -> int {
 	return 1
 }
 
-// Reads face `index` of a font or collection.
-load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
+// Reads face `index` of a font or collection. `need_cmap` false also takes
+// a face that maps no Unicode characters (no cmap, or only symbolic or
+// Macintosh subtables), as PDF embeds TrueType subsets: `glyph_index` then
+// gives 0, and `cmap_subtable` reads the subtables it has.
+load :: proc(data: []u8, index := 0, need_cmap := true) -> (f: Face, err: Error) {
 	f.data = data
 	f.start = face_offset(data, index) or_return
 	for i in 0 ..< int(read_u16(data, f.start + 4)) {
@@ -274,7 +283,7 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 		}
 	}
 	t := &f.tables
-	if t[.cmap].at == 0 || t[.head].at == 0 || t[.hhea].at == 0 || t[.hmtx].at == 0 {
+	if (need_cmap && t[.cmap].at == 0) || t[.head].at == 0 || t[.hhea].at == 0 || t[.hmtx].at == 0 {
 		return {}, .Missing_Table
 	}
 	if t[.head].size < 54 || t[.hhea].size < 36 {
@@ -289,7 +298,7 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 	} else if t[.CFF].at == 0 {
 		return {}, .Missing_Table
 	} else {
-		cff_load(&f) or_return
+		cff_load(&f, data[t[.CFF].at:][:t[.CFF].size]) or_return
 	}
 	f.glyph_count = int(read_u16(data, t[.maxp].at + 4)) if t[.maxp].at != 0 else 0xffff
 	if fvar := t[.fvar].at; fvar != 0 && read_u16(data, fvar) == 1 {
@@ -318,20 +327,75 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 	// The most preferred Unicode subtable the face has in a format read here.
 	cmap := t[.cmap].at
 	m, best := 0, len(CMAP_PREFERENCE)
-	for i in 0 ..< int(read_u16(data, cmap + 2)) {
+	for i in 0 ..< (int(read_u16(data, cmap + 2)) if cmap != 0 else 0) {
 		rec := cmap + 4 + 8 * i
 		if k, found := slice.linear_search(CMAP_PREFERENCE[:], [2]u16{read_u16(data, rec), read_u16(data, rec + 2)}); found && k < best {
 			at := cmap + int(read_u32(data, rec + 4))
-			switch read_u16(data, at) {
-			case 0, 4, 6, 12, 13:
+			if cmap_format_read(read_u16(data, at)) {
 				m, best = at, k
 			}
 		}
 	}
-	if m == 0 {
+	if m != 0 {
+		f.cmap = cmap_read(data, m) or_return
+	} else if need_cmap {
 		return {}, .Bad_Table
 	}
-	c := &f.cmap
+	return f, nil
+}
+
+// Reads a bare CFF font program (PDF's FontFile3 of subtype Type1C or
+// CIDFontType0C): its glyphs, addressed by id, and their names or CIDs.
+// It has no metrics (`h_metrics` gives 0, ascent, descent and line gap are
+// 0: PDF gives the widths), no cmap, and units per em from its FontMatrix
+// (`glyph_matrix`: 1000 unless it says otherwise).
+load_cff :: proc(data: []u8) -> (f: Face, err: Error) {
+	if read_u8(data, 0) != 1 || read_u8(data, 2) < 4 {
+		return {}, .Not_A_Font
+	}
+	f.data = data
+	cff_load(&f, data) or_return
+	f.glyph_count = index_count(f.cff.charstrings)
+	// A scale outside unitsPerEm's range (or NaN) counts as the default.
+	f.units_per_em = 1000
+	if s := abs(glyph_matrix(&f, 0)[0, 0]); s >= 1.0 / 0xffff && s <= 1 {
+		f.units_per_em = int(math.round(1 / s))
+	}
+	return f, nil
+}
+
+// Maps glyph `g`'s outline (font units) to an em of 1: CFF's FontMatrix (a
+// CID-keyed font's after the matrix of the glyph's font dict), else 1 /
+// units per em. PDF's text space is this times the font size.
+glyph_matrix :: proc(f: ^Face, g: Glyph) -> matrix[2, 3]f32 {
+	c := &f.cff
+	if c.table == nil || c.cff2 {
+		s := 1 / f32(max(f.units_per_em, 1))
+		return {s, 0, 0, 0, s, 0}
+	}
+	m := c.font_matrix
+	if c.fontdicts != nil {
+		if fd, ok := font_matrix(index_get(c.fontdicts, glyph_fd(c, g))); ok {
+			// The top dict's applies after the font dict's.
+			m = affine_mul(m, fd)
+		}
+	}
+	return m
+}
+
+// The cmap subtables read: formats 0, 4, 6, 12 and 13.
+@(private)
+cmap_format_read :: proc(format: u16) -> bool {
+	switch format {
+	case 0, 4, 6, 12, 13:
+		return true
+	}
+	return false
+}
+
+// The subtable at `m`, as its format's arrays.
+@(private)
+cmap_read :: proc(data: []u8, m: int) -> (c: Cmap, err: Error) {
 	c.at = m
 	c.format = read_u16(data, m)
 	switch c.format {
@@ -353,7 +417,27 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 	case 12, 13:
 		c.groups = records(data, m + 16, int(read_u32(data, m + 12)), Group)
 	}
-	return f, nil
+	return c, nil
+}
+
+// The face's cmap subtable for (platform, encoding), in a format read
+// here, for codes that aren't Unicode: PDF's symbolic TrueType fonts look
+// codes up in (3, 0), at 0xF000 + the code, or in (1, 0), Mac Roman.
+// `cmap_glyph` maps through it.
+cmap_subtable :: proc(f: ^Face, platform, encoding: u16) -> (c: Cmap, ok: bool) {
+	d, cmap := f.data, f.tables[.cmap].at
+	for i in 0 ..< (int(read_u16(d, cmap + 2)) if cmap != 0 else 0) {
+		rec := cmap + 4 + 8 * i
+		if read_u16(d, rec) == platform && read_u16(d, rec + 2) == encoding {
+			at := cmap + int(read_u32(d, rec + 4))
+			if cmap_format_read(read_u16(d, at)) {
+				err: Error
+				c, err = cmap_read(d, at)
+				return c, err == nil
+			}
+		}
+	}
+	return
 }
 
 // ---- characters and metrics -----------------------------------------------------------
@@ -361,11 +445,16 @@ load :: proc(data: []u8, index := 0) -> (f: Face, err: Error) {
 // The glyph for code point `r`; 0 (the missing glyph) when the face has
 // none.
 glyph_index :: proc(f: ^Face, r: rune) -> Glyph {
-	if r < 0 {
+	return cmap_glyph(f, &f.cmap, r)
+}
+
+// The glyph a subtable of the face's cmap (`f.cmap`, or one from
+// `cmap_subtable`) maps `code` to; 0 when it maps none.
+cmap_glyph :: proc(f: ^Face, c: ^Cmap, code: rune) -> Glyph {
+	if code < 0 {
 		return 0
 	}
-	c := &f.cmap
-	cp := int(r)
+	cp := int(code)
 	switch c.format {
 	case 0:
 		if cp < len(c.bytes) {

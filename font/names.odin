@@ -125,29 +125,12 @@ cff_glyph_names :: proc(c: ^Cff, out: []string) {
 	case 1, 2:
 	// The Expert sets, for expert fonts only: not named here.
 	case:
-		// The glyphs past .notdef: a SID each (format 0), or ranges of
-		// consecutive SIDs with an 8-bit (1) or 16-bit (2) count after the
-		// first.
-		b := Buf{c.table, c.charset}
-		format := get8(&b)
-		if format > 2 {
-			return
-		}
-		for g := 1; g < len(out) && b.pos < len(b.d); {
-			if format == 0 {
-				out[g] = name(c, get(&b, 2))
-				g += 1
-				continue
+		it := charset_init(c)
+		for g, sid in charset_next(&it) {
+			if g >= len(out) {
+				break
 			}
-			sid := get(&b, 2)
-			left := get(&b, format)
-			for _ in 0 ..= left {
-				if g == len(out) {
-					break
-				}
-				out[g] = name(c, sid)
-				g, sid = g + 1, sid + 1
-			}
+			out[g] = name(c, sid)
 		}
 	}
 }

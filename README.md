@@ -20,7 +20,12 @@ only (no C library), every read of the font bounds-checked. MIT licensed
   and instance names) and glyph names, the characters a face maps, and
   variable fonts: fvar's axes and named instances, avar (versions 1 and 2),
   gvar, HVAR and CFF2 blends; `set_variations` / `set_coords` pick a face's
-  instance, and outlines, advances and shaping follow it.
+  instance, and outlines, advances and shaping follow it. For PDF's
+  embedded fonts: a bare CFF font program (`load_cff`), a TrueType subset
+  with no Unicode cmap (`load`'s `need_cmap`), other cmap subtables
+  (`cmap_subtable`: symbolic, Mac Roman), a CID-keyed CFF's CIDs
+  (`glyph_cids`), each glyph's FontMatrix (`glyph_matrix`), and CFF's seac
+  accented glyphs.
 - **`shape`**: OpenType shaping: Unicode properties, script runs, bidi
   levels, line break opportunities (UAX #14) and normalization from the
   Unicode 17.0.0 character database, HarfBuzz's
@@ -195,7 +200,9 @@ perl tools/shape_unicode/gen_syllables.pl HARFBUZZ/src > shape/syllable_data.odi
 
 Some shape tests read installed fonts (Adwaita Sans for variable fonts) and
 skip without them. `assets/` holds the test fonts: Bitstream Vera Sans,
-JetBrains Mono, Noto Sans Arabic Bold and TinyCFF (a few generated glyphs).
+JetBrains Mono, Noto Sans Arabic Bold, TinyCFF and TinySeac (a few
+generated glyphs) and TinyCID (four glyphs of Noto Sans CJK JP, a CID-keyed
+CFF, its FontMatrix moved into its font dicts).
 
 The mascot, an octopus with a quill (ink, and arms that curl like a
 script's strokes), is drawn by `tools/mascot` (`odin run tools/mascot --
