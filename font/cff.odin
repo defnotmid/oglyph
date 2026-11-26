@@ -32,8 +32,10 @@ Cff :: struct {
 	// The top dict's private dict (CID-keyed fonts' are their font
 	// dicts'): its widths (`h_metrics` without hmtx).
 	private:     []u8,
-	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`).
+	// The top dict's FontMatrix: font units to an em of 1 (`glyph_matrix`),
+	// and whether the dict gives it (else it is the default).
 	font_matrix: matrix[2, 3]f32,
+	top_matrix:  bool,
 	// CFF2: INDEX counts are 32-bit; blends read the variation store at
 	// `vstore` in the table (0 for none).
 	cff2:        bool,
@@ -273,8 +275,7 @@ cff_load :: proc(f: ^Face, table: []u8) -> Error {
 	dict_ints(top, 16, encoding[:])
 	c.charset = charset[0]
 	c.encoding = encoding[0]
-	ok: bool
-	if c.font_matrix, ok = font_matrix(top); !ok {
+	if c.font_matrix, c.top_matrix = font_matrix(top); !c.top_matrix {
 		c.font_matrix = {0.001, 0, 0, 0, 0.001, 0}
 	}
 	dict_ints(top, 0x100 | 6, kind[:])

@@ -382,6 +382,23 @@ test_cid_keyed :: proc(t: ^testing.T) {
 	testing.expect_value(t, names[1], "")
 	testing.expect_value(t, glyph_matrix(&f, 1), matrix[2, 3]f32{0.0005, 0, 0, 0, 0.0005, 0})
 	testing.expect_value(t, glyph_matrix(&f, 2), matrix[2, 3]f32{0.001, 0, 0, 0, 0.001, 0})
+	// A top dict without a FontMatrix: the font dict's applies alone (a
+	// font dict [0.001 0 0 0.001 0 0], one font dict for every glyph).
+	{
+		// A real 0.001 ("1E-3": nibbles 1, E-, 3, end), 0, 0, 0.001, 0, 0,
+		// FontMatrix; an INDEX of that dict; FDSelect format 0.
+		dict := [?]u8{30, 0x1c, 0x3f, 139, 139, 30, 0x1c, 0x3f, 139, 139, 12, 7}
+		index: [5 + len(dict)]u8
+		index[1], index[2], index[3], index[4] = 1, 1, 1, 1 + len(dict)
+		copy(index[5:], dict[:])
+		fdselect := [3]u8{0, 0, 0}
+		g := Face{cff = {table = index[:], fontdicts = index[:], fdselect = fdselect[:], font_matrix = {0.001, 0, 0, 0, 0.001, 0}}}
+		testing.expect_value(t, glyph_matrix(&g, 1), matrix[2, 3]f32{0.001, 0, 0, 0, 0.001, 0})
+		// A top dict giving one: it applies after the font dict's.
+		g.cff.top_matrix = true
+		g.cff.font_matrix = {2, 0, 0, 0, 2, 0}
+		testing.expect_value(t, glyph_matrix(&g, 1), matrix[2, 3]f32{0.002, 0, 0, 0, 0.002, 0})
+	}
 	// A face that isn't CID-keyed has no CIDs.
 	f, _ = load(tiny_cff)
 	testing.expect(t, !glyph_cids(&f, cids[:]))

@@ -368,8 +368,10 @@ load_cff :: proc(data: []u8) -> (f: Face, err: Error) {
 }
 
 // Maps glyph `g`'s outline (font units) to an em of 1: Type 1's or CFF's
-// FontMatrix (a CID-keyed font's after the matrix of the glyph's font
-// dict), else 1 / units per em. PDF's text space is this times the font size.
+// FontMatrix, else 1 / units per em. In a CID-keyed font the glyph's font
+// dict's matrix applies, after it the top dict's if that gives one (else
+// the font dict's alone, as FreeType and pdf.js read them), and without
+// one the top's. PDF's text space is this times the font size.
 glyph_matrix :: proc(f: ^Face, g: Glyph) -> matrix[2, 3]f32 {
 	if f.t1.program != nil {
 		return f.t1.font_matrix
@@ -382,8 +384,7 @@ glyph_matrix :: proc(f: ^Face, g: Glyph) -> matrix[2, 3]f32 {
 	m := c.font_matrix
 	if c.fontdicts != nil {
 		if fd, ok := font_matrix(index_get(c.fontdicts, glyph_fd(c, g))); ok {
-			// The top dict's applies after the font dict's.
-			m = affine_mul(m, fd)
+			m = affine_mul(m, fd) if c.top_matrix else fd
 		}
 	}
 	return m
